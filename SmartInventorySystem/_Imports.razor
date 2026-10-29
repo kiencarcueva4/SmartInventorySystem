@@ -1,0 +1,21 @@
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components.Routing
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.EntityFrameworkCore
+@using SmartInventorySystem.Infrastructure
+@using SmartInventorySystem.Domain.Entities
+@using SmartInventorySystem.Domain.Enums
+@using SmartInventorySystem.Services
+@using SmartInventorySystem.Services.Admin
+@using SmartInventorySystem.Services.Alerts
+@using SmartInventorySystem.Services.Analytics
+@using SmartInventorySystem.Services.Auth
+@using SmartInventorySystem.Services.Core
+@using SmartInventorySystem.Services.Reordering
+@using SmartInventorySystem.Services.Reports
+@using Microsoft.JSInterop
+@using SmartInventorySystem.Shared
+@* Every page requires sign-in by default. Public pages (Login) add [AllowAnonymous]. *@
+@attribute [Authorize]

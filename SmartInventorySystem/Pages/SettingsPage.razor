@@ -1,0 +1,103 @@
+@page "/settings"
+@attribute [Authorize(Policy = Permissions.SettingsManage)]
+@using System.Globalization
+@inject ISettingsService SettingsSvc
+@inject IAuthService Auth
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">System Settings</h1>
+        <p class="muted">Business rules used by the analytics, forecasts, reorder recommendations and alerts. Every change is recorded in the audit log.</p>
+    </div>
+    <button type="button" class="btn btn-primary" @onclick="SaveAsync" disabled="@(_busy || _loading)">@(_busy ? "Saving..." : "Save changes")</button>
+</div>
+
+@if (_message is not null)
+{
+    <div class="alert alert-success" role="status">@_message</div>
+}
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+@if (_loading)
+{
+    <p class="muted">Loading...</p>
+}
+else
+{
+    foreach (var group in _entries.GroupBy(e => e.Definition.Group))
+    {
+        <div class="card">
+            <h2>@group.Key</h2>
+            <div class="settings-grid">
+                @foreach (var entry in group)
+                {
+                    var key = entry.Definition.Key;
+                    <div class="setting-row">
+                        <label for="@key">@entry.Definition.Label</label>
+                        <input id="@key" class="input" type="text" inputmode="decimal" @bind="_values[key]" />
+                        @if (!string.IsNullOrEmpty(entry.Definition.Help))
+                        {
+                            <p class="hint">@entry.Definition.Help (allowed: @entry.Definition.Min.ToString("0.##", CultureInfo.InvariantCulture) to @entry.Definition.Max.ToString("0.##", CultureInfo.InvariantCulture))</p>
+                        }
+                    </div>
+                }
+            </div>
+            @if (group.Key == "Demand forecasting")
+            {
+                <p class="hint">Weights total: <strong class="@(WeightsOk ? "text-ok" : "text-danger")">@WeightTotal.ToString("0.00")</strong> @(WeightsOk ? "(OK)" : "(must equal 1.00)")</p>
+            }
+        </div>
+    }
+}
+
+@code {
+    private List<SettingEntry> _entries = new();
+    private Dictionary<string, string> _values = new();
+    private bool _loading = true;
+    private bool _busy;
+    private string? _message, _error;
+
+    private decimal WeightTotal => Parse(SettingKeys.ForecastWeightRecent) + Parse(SettingKeys.ForecastWeightPrevious) + Parse(SettingKeys.ForecastWeightOlder);
+    private bool WeightsOk => Math.Abs(WeightTotal - 1m) <= 0.001m;
+
+    private decimal Parse(string key) =>
+        _values.TryGetValue(key, out var text) && decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out var v) ? v : 0m;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _entries = await SettingsSvc.GetAsync();
+            _values = _entries.ToDictionary(e => e.Definition.Key, e => e.Value);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading settings failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    private async Task SaveAsync()
+    {
+        _busy = true;
+        _message = _error = null;
+        var result = await SettingsSvc.SaveAsync(_values, Auth.Current!.UserId);
+        if (result.Success)
+        {
+            _message = result.Message;
+            await LoadAsync();
+        }
+        else
+        {
+            _error = result.Error;
+        }
+        _busy = false;
+    }
+}

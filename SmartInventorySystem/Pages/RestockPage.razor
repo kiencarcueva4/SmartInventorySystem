@@ -1,0 +1,219 @@
+@page "/reorder/restock"
+@attribute [Authorize(Policy = Permissions.RestockView)]
+@inject IRestockService RestockSvc
+@inject IAuthService Auth
+
+<h1 class="page-title">Restock Records</h1>
+<p class="muted">
+    Tracks approved restocks. The system never contacts a supplier: mark a restock as <strong>Ordered</strong>
+    after you have placed the order yourself, and <strong>Received</strong> when the delivery arrives.
+</p>
+
+@if (_message is not null)
+{
+    <div class="alert alert-success" role="status">@_message</div>
+}
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+@if (_loading)
+{
+    <p class="muted">Loading...</p>
+}
+else
+{
+    var rows = Visible().ToList();
+
+    <div class="grid">
+        <div class="card stat"><div class="stat-label">Planned</div><div class="stat-value">@Count(RestockStatus.Planned)</div></div>
+        <div class="card stat"><div class="stat-label">Ordered</div><div class="stat-value">@Count(RestockStatus.Ordered)</div></div>
+        <div class="card stat"><div class="stat-label">Received</div><div class="stat-value">@Count(RestockStatus.Received)</div></div>
+        <div class="card stat"><div class="stat-label">Cancelled</div><div class="stat-value">@Count(RestockStatus.Cancelled)</div></div>
+    </div>
+
+    <div class="card">
+        <div class="toolbar">
+            <select class="input" @bind="_statusFilter">
+                <option value="Open">Open (planned / ordered)</option>
+                <option value="Received">Received</option>
+                <option value="Cancelled">Cancelled</option>
+                <option value="All">All</option>
+            </select>
+        </div>
+
+        @if (rows.Count == 0)
+        {
+            <div class="empty-state">No restock records here. Approve a recommendation to create one.</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Item</th><th>Supplier</th><th class="num">Approved qty</th><th>Status</th>
+                            <th>Purchase date</th><th>Expected delivery</th><th>Notes</th><th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var r in rows)
+                    {
+                        <tr>
+                            <td><a href="/reorder/recommendations/@r.RecommendationId">@r.ItemName</a></td>
+                            <td>@(r.SupplierName ?? "-")</td>
+                            <td class="num">@Fmt.Qty(r.ApprovedQuantity) @r.Unit</td>
+                            <td><Badge Kind="@ReorderUi.RestockKind(r.Status)" Text="@r.Status.ToString()" /></td>
+                            <td>@(r.PurchaseDate is DateTime p ? p.ToString("yyyy-MM-dd") : "-")</td>
+                            <td>@(r.ExpectedDelivery is DateTime e ? e.ToString("yyyy-MM-dd") : "-")</td>
+                            <td class="muted">@r.Notes</td>
+                            <td class="actions">
+                                @if (Auth.Can(Permissions.RestockManage) && (r.Status == RestockStatus.Planned || r.Status == RestockStatus.Ordered))
+                                {
+                                    <button type="button" class="btn btn-sm btn-secondary" @onclick="() => Open(r)">Update</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+}
+
+@if (_edit is not null && _row is not null)
+{
+    <Modal Title="@($"Update restock - {_row.ItemName}")" OnClose="Close">
+        @if (_formError is not null)
+        {
+            <div class="alert alert-error" role="alert">@_formError</div>
+        }
+
+        <label for="rs">New status</label>
+        <select id="rs" class="input" @bind="_edit.NewStatus">
+            @foreach (var s in NextStatuses(_row.Status))
+            {
+                <option value="@s">@s</option>
+            }
+        </select>
+
+        @if (_edit.NewStatus == RestockStatus.Ordered)
+        {
+            <label for="pd">Purchase date</label>
+            <input id="pd" class="input" type="date" max="@TodayText" @bind="_purchaseDate" />
+
+            <label for="ed">Expected delivery date</label>
+            <input id="ed" class="input" type="date" @bind="_expectedDelivery" />
+        }
+
+        @if (_edit.NewStatus == RestockStatus.Received)
+        {
+            <p class="hint">Receiving does not change stock. Record the delivery on the Stock-In page afterwards.</p>
+        }
+
+        <label for="rn">Notes (optional)</label>
+        <textarea id="rn" class="input" rows="3" maxlength="500" @bind="_edit.Notes"></textarea>
+
+        <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" @onclick="Close">Cancel</button>
+            <button type="button" class="btn @(_edit.NewStatus == RestockStatus.Cancelled ? "btn-danger" : "btn-primary")" @onclick="SaveAsync" disabled="@_busy">
+                @(_busy ? "Saving..." : "Save")
+            </button>
+        </div>
+    </Modal>
+}
+
+@code {
+    private List<RestockRow> _all = new();
+    private RestockRow? _row;
+    private RestockUpdateInput? _edit;
+    private DateTime _purchaseDate = DateTime.Today;
+    private DateTime _expectedDelivery = DateTime.Today;
+    private bool _loading = true;
+    private bool _busy;
+    private string? _message, _error, _formError;
+    private string _statusFilter = "Open";
+
+    private string TodayText => DateTime.Today.ToString("yyyy-MM-dd");
+
+    private int Count(RestockStatus s) => _all.Count(r => r.Status == s);
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _all = await RestockSvc.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading restock records failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    private IEnumerable<RestockRow> Visible() => _statusFilter switch
+    {
+        "Open" => _all.Where(r => r.Status == RestockStatus.Planned || r.Status == RestockStatus.Ordered),
+        "Received" => _all.Where(r => r.Status == RestockStatus.Received),
+        "Cancelled" => _all.Where(r => r.Status == RestockStatus.Cancelled),
+        _ => _all
+    };
+
+    private static RestockStatus[] NextStatuses(RestockStatus current) => current switch
+    {
+        RestockStatus.Planned => new[] { RestockStatus.Ordered, RestockStatus.Cancelled },
+        RestockStatus.Ordered => new[] { RestockStatus.Received, RestockStatus.Cancelled },
+        _ => Array.Empty<RestockStatus>()
+    };
+
+    private void Open(RestockRow row)
+    {
+        _formError = null;
+        _row = row;
+        _purchaseDate = DateTime.Today;
+        _expectedDelivery = row.ExpectedDelivery ?? DateTime.Today;
+        _edit = new RestockUpdateInput
+        {
+            RestockId = row.Id,
+            NewStatus = NextStatuses(row.Status)[0],
+            Notes = row.Notes
+        };
+    }
+
+    private void Close()
+    {
+        _row = null;
+        _edit = null;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_edit is null) return;
+        _busy = true;
+        _formError = null;
+
+        _edit.PurchaseDate = _purchaseDate;
+        _edit.ExpectedDelivery = _expectedDelivery;
+
+        var result = await RestockSvc.UpdateAsync(_edit, Auth.Current!.UserId);
+        _busy = false;
+
+        if (result.Success)
+        {
+            Close();
+            _message = result.Message;
+            _error = null;
+            await LoadAsync();
+        }
+        else
+        {
+            _formError = result.Error;
+        }
+    }
+}

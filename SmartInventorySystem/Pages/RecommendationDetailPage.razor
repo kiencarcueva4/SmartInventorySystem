@@ -1,0 +1,241 @@
+@page "/reorder/recommendations/{Id:int}"
+@attribute [Authorize(Policy = Permissions.RecommendationsView)]
+@inject IReorderService ReorderSvc
+@inject IAuthService Auth
+
+@if (_loading)
+{
+    <p class="muted">Loading...</p>
+}
+else if (_rec is null)
+{
+    <div class="card">
+        <div class="empty-state">This recommendation was not found.</div>
+        <a class="btn btn-secondary" href="/reorder/recommendations">Back to recommendations</a>
+    </div>
+}
+else
+{
+    var targetLevel = _rec.LeadTimeDemand + _rec.SafetyStock;
+    var suggested = Math.Max(0m, targetLevel - _rec.CurrentStock);
+
+    <p><a href="/reorder/recommendations">&larr; Back to recommendations</a></p>
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">@_rec.ItemName</h1>
+            <p class="muted">
+                <Badge Kind="@UrgencyUi.Kind(_rec.Urgency)" Text="@UrgencyUi.Label(_rec.Urgency)" />
+                <Badge Kind="@ReorderUi.StatusKind(_rec.Status)" Text="@_rec.Status.ToString()" />
+                &middot; created @Fmt.Local(_rec.CreatedAt)
+            </p>
+        </div>
+    </div>
+
+    @if (_message is not null)
+    {
+        <div class="alert alert-success" role="status">@_message</div>
+    }
+    @if (_error is not null)
+    {
+        <div class="alert alert-error" role="alert">@_error</div>
+    }
+
+    <div class="grid-2">
+        <div class="card">
+            <h2>Recommendation details</h2>
+            <dl class="detail-list">
+                <dt>Item</dt><dd>@_rec.ItemName <span class="muted small">(@_rec.Sku, @_rec.CategoryName)</span></dd>
+                <dt>Current stock</dt><dd>@Fmt.Qty(_rec.CurrentStock) @_rec.Unit</dd>
+                <dt>Average daily usage</dt><dd>@Fmt.Qty(_rec.AverageDailyUsage) @_rec.Unit <span class="muted small">(last 30 days)</span></dd>
+                <dt>Forecasted demand</dt><dd>@Fmt.Qty(_rec.ForecastedDemand) @_rec.Unit <span class="muted small">(next period)</span></dd>
+                <dt>Supplier</dt><dd>@(_rec.SupplierName ?? "None assigned")</dd>
+                <dt>Lead time</dt><dd>@_rec.LeadTimeDays day(s)</dd>
+                <dt>Safety stock</dt><dd>@Fmt.Qty(_rec.SafetyStock) @_rec.Unit</dd>
+                <dt>Reorder point</dt><dd>@Fmt.Qty(_rec.ReorderPoint) @_rec.Unit</dd>
+                <dt>Recommended quantity</dt><dd><strong>@Fmt.Qty(_rec.RecommendedQuantity) @_rec.Unit</strong></dd>
+                <dt>Priority</dt><dd><Badge Kind="@UrgencyUi.Kind(_rec.Urgency)" Text="@UrgencyUi.Label(_rec.Urgency)" /></dd>
+            </dl>
+        </div>
+
+        <div class="card">
+            <h2>How the quantity was calculated</h2>
+            <table class="table">
+                <tbody>
+                    <tr><td>Lead-time demand<br /><span class="muted small">daily forecast x @_rec.LeadTimeDays-day lead time</span></td><td class="num">@Fmt.Qty(_rec.LeadTimeDemand) @_rec.Unit</td></tr>
+                    <tr><td>+ Safety stock</td><td class="num">@Fmt.Qty(_rec.SafetyStock) @_rec.Unit</td></tr>
+                    <tr><td><strong>= Target level</strong></td><td class="num"><strong>@Fmt.Qty(targetLevel) @_rec.Unit</strong></td></tr>
+                    <tr><td>- Current stock</td><td class="num">@Fmt.Qty(_rec.CurrentStock) @_rec.Unit</td></tr>
+                    <tr><td><strong>= Suggested order</strong> <span class="muted small">(never below zero)</span></td><td class="num"><strong>@Fmt.Qty(suggested) @_rec.Unit</strong></td></tr>
+                    <tr><td>Item's minimum order quantity</td><td class="num">@Fmt.Qty(_rec.MinimumOrderQuantity) @_rec.Unit</td></tr>
+                    <tr><td><strong>Recommended quantity</strong> <span class="muted small">(rounded up)</span></td><td class="num"><strong>@Fmt.Qty(_rec.RecommendedQuantity) @_rec.Unit</strong></td></tr>
+                </tbody>
+            </table>
+            <p class="muted small">Forecasts are estimates, not guaranteed values.</p>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Reason</h2>
+        @foreach (var line in (_rec.Reason ?? "No reason recorded.").Split('\n'))
+        {
+            <p>@line</p>
+        }
+    </div>
+
+    <div class="card">
+        <h2>Owner decision</h2>
+
+        @if (_rec.Status == RecommendationStatus.Pending || _rec.Status == RecommendationStatus.Deferred)
+        {
+            if (Auth.Can(Permissions.RecommendationsDecide))
+            {
+                if (_rec.Status == RecommendationStatus.Deferred)
+                {
+                    <p class="muted">This recommendation was deferred. You can still approve or dismiss it.</p>
+                }
+                <div class="actions-row">
+                    <button type="button" class="btn btn-primary" @onclick="() => Open(OwnerDecision.Approved)">Approve</button>
+                    <button type="button" class="btn btn-secondary" @onclick="() => Open(OwnerDecision.Deferred)">Defer</button>
+                    <button type="button" class="btn btn-danger" @onclick="() => Open(OwnerDecision.Dismissed)">Dismiss</button>
+                </div>
+                <p class="muted small">Approving creates a restock record to track. It does not place an order with the supplier.</p>
+            }
+            else
+            {
+                <p class="muted">Waiting for the owner. Only the owner can approve, defer or dismiss recommendations.</p>
+            }
+        }
+        else
+        {
+            <dl class="detail-list">
+                <dt>Decision</dt><dd>@_rec.Decision</dd>
+                <dt>Decided on</dt><dd>@(_rec.DecisionDate is DateTime d ? Fmt.Local(d) : "-")</dd>
+                <dt>Decided by</dt><dd>@(_rec.DecidedBy ?? "System")</dd>
+                @if (_rec.RestockId is not null)
+                {
+                    <dt>Restock</dt>
+                    <dd>
+                        <Badge Kind="@ReorderUi.RestockKind(_rec.RestockState!.Value)" Text="@_rec.RestockState.ToString()" />
+                        @Fmt.Qty(_rec.ApprovedQuantity ?? 0m) @_rec.Unit
+                        @(_rec.ExpectedDelivery is DateTime due ? $", expected {due:yyyy-MM-dd}" : string.Empty)
+                        &middot; <a href="/reorder/restock">Open restock records</a>
+                    </dd>
+                }
+            </dl>
+        }
+    </div>
+}
+
+@if (_action is not null && _rec is not null && _input is not null)
+{
+    <Modal Title="@ActionTitle" OnClose="Close">
+        @if (_formError is not null)
+        {
+            <div class="alert alert-error" role="alert">@_formError</div>
+        }
+
+        @if (_action == OwnerDecision.Approved)
+        {
+            <label for="dq">Quantity to order (@_rec.Unit)</label>
+            <input id="dq" class="input" type="number" step="any" min="0" @bind="_input.ApprovedQuantity" />
+
+            <label for="dd">Expected delivery date</label>
+            <input id="dd" class="input" type="date" min="@TodayText" @bind="_input.ExpectedDelivery" />
+        }
+
+        <label for="dn">Note (optional)</label>
+        <textarea id="dn" class="input" rows="3" maxlength="300" @bind="_input.Note"></textarea>
+
+        <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" @onclick="Close">Cancel</button>
+            <button type="button" class="btn @(_action == OwnerDecision.Dismissed ? "btn-danger" : "btn-primary")" @onclick="SaveAsync" disabled="@_busy">
+                @(_busy ? "Saving..." : ActionButton)
+            </button>
+        </div>
+    </Modal>
+}
+
+@code {
+    [Parameter] public int Id { get; set; }
+
+    private RecommendationRow? _rec;
+    private DecisionInput? _input;
+    private OwnerDecision? _action;
+    private bool _loading = true;
+    private bool _busy;
+    private string? _message, _error, _formError;
+
+    private string TodayText => DateTime.Today.ToString("yyyy-MM-dd");
+
+    private string ActionTitle => _action switch
+    {
+        OwnerDecision.Approved => "Approve recommendation",
+        OwnerDecision.Deferred => "Defer recommendation",
+        _ => "Dismiss recommendation"
+    };
+
+    private string ActionButton => _action switch
+    {
+        OwnerDecision.Approved => "Approve",
+        OwnerDecision.Deferred => "Defer",
+        _ => "Dismiss"
+    };
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _rec = await ReorderSvc.GetAsync(Id);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading the recommendation failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    private void Open(OwnerDecision decision)
+    {
+        if (_rec is null) return;
+        _formError = null;
+        _action = decision;
+        _input = new DecisionInput
+        {
+            RecommendationId = _rec.Id,
+            Decision = decision,
+            ApprovedQuantity = _rec.RecommendedQuantity,
+            ExpectedDelivery = DateTime.Today.AddDays(_rec.LeadTimeDays)
+        };
+    }
+
+    private void Close()
+    {
+        _action = null;
+        _input = null;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_input is null) return;
+        _busy = true;
+        _formError = null;
+        var result = await ReorderSvc.DecideAsync(_input, Auth.Current!.UserId);
+        _busy = false;
+
+        if (result.Success)
+        {
+            Close();
+            _message = result.Message;
+            _error = null;
+            await LoadAsync();
+        }
+        else
+        {
+            _formError = result.Error;
+        }
+    }
+}

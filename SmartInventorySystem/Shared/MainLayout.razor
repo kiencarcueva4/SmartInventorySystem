@@ -1,0 +1,86 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject IAuthService Auth
+@inject NavigationManager Nav
+
+@if (Auth.Current is null)
+{
+    @* Signed out: show only the page content (the login redirect happens in AppRoot). *@
+    @Body
+}
+else
+{
+    <div class="app-shell">
+        <aside class="sidebar">
+            <NavMenu />
+        </aside>
+        <div class="main">
+            <header class="topbar">
+                <div class="topbar-title">Smart Inventory Monitoring and Reorder Management</div>
+                <div class="user-chip">
+                    <span class="avatar">@Initials</span>
+                    <span>
+                        <span class="user-name">@Auth.Current.FullName</span>
+                        <span class="user-role">@Auth.Current.RoleName</span>
+                    </span>
+                </div>
+            </header>
+            <main class="content">
+                <AppErrorBoundary @ref="_boundary">
+                    @Body
+                </AppErrorBoundary>
+            </main>
+        </div>
+    </div>
+}
+
+@code {
+    private AppErrorBoundary? _boundary;
+
+    private string Initials
+    {
+        get
+        {
+            var parts = (Auth.Current?.FullName ?? "?").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            return string.Concat(parts.Take(2).Select(p => char.ToUpperInvariant(p[0])));
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        Auth.Changed += OnAuthChanged;
+        Nav.LocationChanged += OnLocationChanged;
+        EnforcePasswordChange();
+    }
+
+    private void OnAuthChanged() => InvokeAsync(StateHasChanged);
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        EnforcePasswordChange();
+
+        // Moving to another page clears a previous error message.
+        InvokeAsync(() =>
+        {
+            if (_boundary?.HasError == true) _boundary.Recover();
+        });
+    }
+
+    // A user flagged MustChangePassword cannot use the system until the password is changed.
+    private void EnforcePasswordChange()
+    {
+        if (Auth.Current?.MustChangePassword != true) return;
+
+        var path = new Uri(Nav.Uri).AbsolutePath.TrimEnd('/');
+        if (!path.Equals("/change-password", StringComparison.OrdinalIgnoreCase))
+        {
+            Nav.NavigateTo("/change-password");
+        }
+    }
+
+    public void Dispose()
+    {
+        Auth.Changed -= OnAuthChanged;
+        Nav.LocationChanged -= OnLocationChanged;
+    }
+}

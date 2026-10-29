@@ -1,0 +1,84 @@
+@page "/login"
+@layout LoginLayout
+@attribute [AllowAnonymous]
+@using System.ComponentModel.DataAnnotations
+@inject IAuthService Auth
+@inject NavigationManager Nav
+
+<div class="login-card">
+    <div class="login-brand">
+        <div class="brand-mark large">SI</div>
+        <h1>Smart Inventory System</h1>
+        <p class="muted">Printing shop inventory and reorder management</p>
+    </div>
+
+    <EditForm Model="_model" OnValidSubmit="SignInAsync">
+        <DataAnnotationsValidator />
+
+        @if (_error is not null)
+        {
+            <div class="alert alert-error" role="alert">@_error</div>
+        }
+
+        <label for="username">Username</label>
+        <input id="username" class="input" @bind="_model.Username" @bind:event="oninput"
+               autocomplete="username" autofocus />
+        <ValidationMessage For="() => _model.Username" />
+
+        <label for="password">Password</label>
+        <div class="password-row">
+            <input id="password" class="input" type="@(_show ? "text" : "password")"
+                   @bind="_model.Password" @bind:event="oninput" autocomplete="current-password" />
+            <button type="button" class="link-btn" @onclick="() => _show = !_show">@(_show ? "Hide" : "Show")</button>
+        </div>
+        <ValidationMessage For="() => _model.Password" />
+
+        <button type="submit" class="btn btn-primary btn-block" disabled="@_busy">
+            @(_busy ? "Signing in..." : "Sign in")
+        </button>
+    </EditForm>
+
+    <p class="muted small center">Forgot your password? Please contact the administrator.</p>
+</div>
+
+@code {
+    private readonly LoginModel _model = new();
+    private string? _error;
+    private bool _busy;
+    private bool _show;
+
+    protected override void OnInitialized()
+    {
+        // Already signed in? Go straight to the dashboard.
+        if (Auth.Current is not null) Nav.NavigateTo("/");
+    }
+
+    private async Task SignInAsync()
+    {
+        _busy = true;
+        _error = null;
+
+        var result = await Auth.LoginAsync(_model.Username, _model.Password);
+
+        _busy = false;
+        if (result.Success)
+        {
+            _model.Password = string.Empty;
+            Nav.NavigateTo(result.MustChangePassword ? "/change-password" : "/");
+        }
+        else
+        {
+            _error = result.Error;
+            _model.Password = string.Empty;
+        }
+    }
+
+    private sealed class LoginModel
+    {
+        [Required(ErrorMessage = "Username is required.")]
+        public string Username { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "Password is required.")]
+        public string Password { get; set; } = string.Empty;
+    }
+}

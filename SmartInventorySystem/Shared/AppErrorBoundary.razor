@@ -1,0 +1,30 @@
+@inherits ErrorBoundaryBase
+
+@if (CurrentException is null)
+{
+    @ChildContent
+}
+else
+{
+    <div class="card error-card" role="alert">
+        <h2>Something went wrong</h2>
+        <p class="muted">
+            That action could not be completed. Your data was not damaged. The technical details were saved to the
+            log file (Documents\SmartInventorySystem\logs) so the problem can be fixed.
+        </p>
+        <div class="actions-row">
+            <button type="button" class="btn btn-primary" @onclick="Recover">Try again</button>
+            <a class="btn btn-secondary" href="/">Go to dashboard</a>
+        </div>
+    </div>
+}
+
+@code {
+    public bool HasError => CurrentException is not null;
+
+    protected override Task OnErrorAsync(Exception exception)
+    {
+        AppLogger.Error("Unhandled error in the user interface.", exception);
+        return Task.CompletedTask;
+    }
+}

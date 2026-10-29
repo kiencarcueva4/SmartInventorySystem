@@ -1,0 +1,52 @@
+@inject IAuthService Auth
+@inject NavigationManager Nav
+
+<div class="brand">
+    <div class="brand-mark">SI</div>
+    <div class="brand-text">Smart Inventory<small>Printing Shop</small></div>
+</div>
+
+<nav class="nav">
+    @foreach (var group in NavCatalog.Groups)
+    {
+        var visible = group.Items.Where(i => Auth.Can(i.Permission)).ToList();
+        if (visible.Count == 0)
+        {
+            continue;
+        }
+
+        <div class="nav-group">
+            @if (group.Title is not null)
+            {
+                <div class="nav-group-title">@group.Title</div>
+            }
+            @foreach (var item in visible)
+            {
+                if (item.AvailableInPhase is null)
+                {
+                    <NavLink class="nav-link" href="@item.Href"
+                             Match="@(item.Href == "/" ? NavLinkMatch.All : NavLinkMatch.Prefix)">@item.Title</NavLink>
+                }
+                else
+                {
+                    <span class="nav-link disabled" title="Planned for Phase @item.AvailableInPhase">
+                        @item.Title <em class="soon">Phase @item.AvailableInPhase</em>
+                    </span>
+                }
+            }
+        </div>
+    }
+</nav>
+
+<div class="nav-footer">
+    <NavLink class="nav-link" href="/change-password">Change password</NavLink>
+    <button type="button" class="nav-link nav-button" @onclick="LogoutAsync">Log out</button>
+</div>
+
+@code {
+    private async Task LogoutAsync()
+    {
+        await Auth.LogoutAsync();
+        Nav.NavigateTo("/login");
+    }
+}

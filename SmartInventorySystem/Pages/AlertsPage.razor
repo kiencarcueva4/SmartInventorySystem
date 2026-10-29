@@ -1,0 +1,227 @@
+@page "/alerts"
+@attribute [Authorize(Policy = Permissions.AlertsView)]
+@inject IAlertService AlertSvc
+@inject IAuthService Auth
+@inject NavigationManager Nav
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Alerts Center</h1>
+        <p class="muted">Problems found in your inventory. Acknowledge an alert once you have seen it.</p>
+    </div>
+    <div class="actions-row">
+        <button type="button" class="btn btn-secondary" @onclick="RefreshAsync" disabled="@_busy">@(_busy ? "Checking..." : "Check now")</button>
+        <button type="button" class="btn btn-primary" @onclick="AcknowledgeAllAsync" disabled="@(_busy || OpenCount == 0)">Acknowledge all</button>
+    </div>
+</div>
+
+@if (_message is not null)
+{
+    <div class="alert alert-success" role="status">@_message</div>
+}
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+@if (_loading)
+{
+    <p class="muted">Loading...</p>
+}
+else
+{
+    var rows = Visible().ToList();
+
+    <div class="grid">
+        <div class="card stat @(Open(AlertSeverity.Critical) > 0 ? "stat-danger" : string.Empty)">
+            <div class="stat-label">Critical (open)</div>
+            <div class="stat-value">@Open(AlertSeverity.Critical)</div>
+        </div>
+        <div class="card stat @(Open(AlertSeverity.Warning) > 0 ? "stat-warn" : string.Empty)">
+            <div class="stat-label">Warning (open)</div>
+            <div class="stat-value">@Open(AlertSeverity.Warning)</div>
+        </div>
+        <div class="card stat">
+            <div class="stat-label">Info (open)</div>
+            <div class="stat-value">@Open(AlertSeverity.Info)</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="toolbar">
+            <input class="input" placeholder="Search message..." @bind="_search" @bind:event="oninput" />
+            <select class="input" @bind="_statusFilter">
+                <option value="Open">Open</option>
+                <option value="Closed">Acknowledged / resolved</option>
+                <option value="All">All</option>
+            </select>
+            <select class="input" @bind="_severityFilter">
+                <option value="All">All severities</option>
+                <option value="Critical">Critical</option>
+                <option value="Warning">Warning</option>
+                <option value="Info">Info</option>
+            </select>
+            <select class="input" @bind="_typeFilter">
+                <option value="All">All types</option>
+                @foreach (var t in Enum.GetValues<AlertType>())
+                {
+                    <option value="@t">@TypeLabel(t)</option>
+                }
+            </select>
+        </div>
+
+        @if (rows.Count == 0)
+        {
+            <div class="empty-state">@(OpenCount == 0 && _statusFilter == "Open" ? "No open alerts. Everything looks fine." : "No alerts match the current filters.")</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="table">
+                    <thead><tr><th>Severity</th><th>Type</th><th>Message</th><th>Date</th><th>Status</th><th></th></tr></thead>
+                    <tbody>
+                    @foreach (var a in rows)
+                    {
+                        <tr>
+                            <td><Badge Kind="@SeverityKind(a.Severity)" Text="@a.Severity.ToString()" /></td>
+                            <td>@TypeLabel(a.Type)</td>
+                            <td>@a.Message</td>
+                            <td>@Fmt.Local(a.CreatedAt)</td>
+                            <td>
+                                @if (!a.IsAcknowledged)
+                                {
+                                    <button type="button" class="badge badge-warn badge-button" title="Open the related page" @onclick="() => Go(a)">Open</button>
+                                }
+                                else
+                                {
+                                    <span class="muted small">@(a.AcknowledgedBy is null ? "Resolved" : "Acknowledged by " + a.AcknowledgedBy)</span>
+                                }
+                            </td>
+                            <td class="actions">
+                                <button type="button" class="btn btn-sm btn-primary" @onclick="() => Go(a)">Open</button>
+                                @if (!a.IsAcknowledged)
+                                {
+                                    <button type="button" class="btn btn-sm btn-secondary" @onclick="() => AcknowledgeAsync(a.Id)" disabled="@_busy">Acknowledge</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private List<AlertRow> _all = new();
+    private bool _loading = true;
+    private bool _busy;
+    private string? _message, _error;
+
+    private string _search = string.Empty;
+    private string _statusFilter = "Open";
+    private string _severityFilter = "All";
+    private string _typeFilter = "All";
+
+    private int OpenCount => _all.Count(a => !a.IsAcknowledged);
+    private int Open(AlertSeverity s) => _all.Count(a => !a.IsAcknowledged && a.Severity == s);
+
+    private static string TypeLabel(AlertType t) => t switch
+    {
+        AlertType.LowStock => "Low Stock",
+        AlertType.UrgentReorder => "Urgent Reorder",
+        AlertType.StockoutRisk => "Stockout Risk",
+        AlertType.Overstock => "Overstock",
+        AlertType.SlowMovingItem => "Slow-Moving Item",
+        AlertType.ObsolescenceRisk => "Ageing Risk",
+        AlertType.ForecastWarning => "Forecast Warning",
+        _ => t.ToString()
+    };
+
+    // Takes you to the page where the problem can be looked at or fixed.
+    private void Go(AlertRow a)
+    {
+        var name = Uri.EscapeDataString(a.ItemName ?? string.Empty);
+        var target = a.Type switch
+        {
+            AlertType.LowStock or AlertType.Overstock or AlertType.StockoutRisk => $"/inventory?search={name}",
+            AlertType.UrgentReorder => $"/reorder/recommendations?search={name}",
+            AlertType.SlowMovingItem or AlertType.ObsolescenceRisk => "/analytics/movement",
+            AlertType.ForecastWarning => "/analytics/forecasting",
+            _ => "/inventory"
+        };
+        Nav.NavigateTo(target);
+    }
+
+    private static string SeverityKind(AlertSeverity s) => s switch
+    {
+        AlertSeverity.Critical => "danger",
+        AlertSeverity.Warning => "warn",
+        _ => "info"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            await AlertSvc.RefreshAsync();   // always show up-to-date alerts
+            _all = await AlertSvc.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading alerts failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    private IEnumerable<AlertRow> Visible()
+    {
+        IEnumerable<AlertRow> q = _all;
+        if (_statusFilter == "Open") q = q.Where(a => !a.IsAcknowledged);
+        else if (_statusFilter == "Closed") q = q.Where(a => a.IsAcknowledged);
+        if (_severityFilter != "All") q = q.Where(a => a.Severity.ToString() == _severityFilter);
+        if (_typeFilter != "All") q = q.Where(a => a.Type.ToString() == _typeFilter);
+        if (!string.IsNullOrWhiteSpace(_search)) q = q.Where(a => a.Message.Contains(_search, StringComparison.OrdinalIgnoreCase));
+        return q;
+    }
+
+    private async Task RefreshAsync()
+    {
+        _busy = true;
+        _message = _error = null;
+        try
+        {
+            await AlertSvc.RefreshAsync();
+            _all = await AlertSvc.ListAsync();
+            _message = "Alerts updated.";
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Refreshing alerts failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _busy = false;
+    }
+
+    private async Task AcknowledgeAsync(int id)
+    {
+        _busy = true;
+        _message = _error = null;
+        var result = await AlertSvc.AcknowledgeAsync(id, Auth.Current!.UserId);
+        if (result.Success) _message = result.Message; else _error = result.Error;
+        _all = await AlertSvc.ListAsync();
+        _busy = false;
+    }
+
+    private async Task AcknowledgeAllAsync()
+    {
+        _busy = true;
+        _message = _error = null;
+        var result = await AlertSvc.AcknowledgeAllAsync(Auth.Current!.UserId);
+        if (result.Success) _message = result.Message; else _error = result.Error;
+        _all = await AlertSvc.ListAsync();
+        _busy = false;
+    }
+}

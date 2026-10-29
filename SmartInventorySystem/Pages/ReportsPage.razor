@@ -1,0 +1,160 @@
+@page "/reports"
+@attribute [Authorize(Policy = Permissions.ReportsView)]
+@inject IReportService ReportSvc
+@inject IExportService ExportSvc
+@inject ICategoryService CategorySvc
+@inject IAuthService Auth
+@inject IJSRuntime JS
+
+<div class="no-print">
+    <h1 class="page-title">Reports</h1>
+    <p class="muted">Generate a report, then print it or export it to a CSV file that opens in Excel.</p>
+
+    @if (_message is not null)
+    {
+        <div class="alert alert-success" role="status">@_message</div>
+    }
+    @if (_error is not null)
+    {
+        <div class="alert alert-error" role="alert">@_error</div>
+    }
+
+    <div class="card">
+        <div class="toolbar">
+            <label class="inline-label">Report
+                <select class="input" @bind="_type">
+                    @foreach (var t in Enum.GetValues<ReportType>())
+                    {
+                        <option value="@t">@ReportService.TypeName(t)</option>
+                    }
+                </select>
+            </label>
+            <label class="inline-label">Category
+                <select class="input" @bind="_categoryId">
+                    <option value="0">All categories</option>
+                    @foreach (var c in _categories)
+                    {
+                        <option value="@c.CategoryId">@c.Name</option>
+                    }
+                </select>
+            </label>
+            @if (ReportService.UsesDateRange(_type))
+            {
+                <label class="inline-label">From <input class="input" type="date" @bind="_from" /></label>
+                <label class="inline-label">To <input class="input" type="date" @bind="_to" /></label>
+            }
+            <button type="button" class="btn btn-primary" @onclick="GenerateAsync" disabled="@_busy">@(_busy ? "Working..." : "Generate")</button>
+        </div>
+        @if (_table is not null)
+        {
+            <div class="actions-row">
+                <button type="button" class="btn btn-secondary" @onclick="PrintAsync">Print</button>
+                <button type="button" class="btn btn-secondary" @onclick="ExportCsv">Export to CSV</button>
+            </div>
+        }
+    </div>
+</div>
+
+@if (_table is not null)
+{
+    <div class="card report">
+        <div class="report-header">
+            <h2>@_table.Title</h2>
+            <p class="muted">@_table.Subtitle</p>
+            <p class="muted small">Generated @_table.GeneratedAt.ToString("yyyy-MM-dd HH:mm") by @Auth.Current?.FullName &middot; @_table.Rows.Count row(s)</p>
+        </div>
+
+        @if (_table.Rows.Count == 0)
+        {
+            <div class="empty-state">No data for this report with the selected filters.</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            @foreach (var column in _table.Columns)
+                            {
+                                <th>@column</th>
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var row in _table.Rows)
+                    {
+                        <tr>
+                            @foreach (var cell in row)
+                            {
+                                <td>@cell</td>
+                            }
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private List<CategoryRow> _categories = new();
+    private ReportTable? _table;
+    private ReportType _type = ReportType.InventoryStatus;
+    private int _categoryId;
+    private DateTime _from = DateTime.Today.AddDays(-89);
+    private DateTime _to = DateTime.Today;
+    private bool _busy;
+    private string? _message, _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _categories = (await CategorySvc.ListAsync()).Where(c => c.Status == RecordStatus.Active).ToList();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading report filters failed.", ex);
+        }
+    }
+
+    private async Task GenerateAsync()
+    {
+        _busy = true;
+        _message = _error = null;
+        var result = await ReportSvc.BuildAsync(new ReportRequest(_type, _categoryId, _from, _to), Auth.Current!.UserId);
+        if (result.Success) _table = result.Table; else _error = result.Error;
+        _busy = false;
+    }
+
+    private async Task PrintAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("print");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Printing failed.", ex);
+            _error = "Unable to open the print dialog. Try Export to CSV instead.";
+        }
+    }
+
+    private void ExportCsv()
+    {
+        if (_table is null) return;
+        _message = _error = null;
+        try
+        {
+            var name = $"{_table.Title.Replace(' ', '_')}_{DateTime.Now:yyyyMMdd}.csv";
+            var path = ExportSvc.SaveCsv(name, ReportSvc.ToCsv(_table));
+            if (path is not null) _message = $"Report saved to {path}";
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Exporting the report failed.", ex);
+            _error = "Unable to save the file. Please choose a different location and try again.";
+        }
+    }
+}

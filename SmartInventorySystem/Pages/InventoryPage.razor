@@ -1,0 +1,209 @@
+@page "/inventory"
+@attribute [Authorize(Policy = Permissions.InventoryView)]
+@inject IInventoryService InventorySvc
+@inject ICategoryService CategorySvc
+@inject IAuthService Auth
+
+<div class="page-header">
+    <h1 class="page-title">Inventory Monitoring</h1>
+    <button type="button" class="btn btn-secondary" @onclick="LoadAsync">Refresh</button>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+<div class="grid">
+    <div class="card stat">
+        <div class="stat-label">Active items</div>
+        <div class="stat-value">@_rows.Count</div>
+    </div>
+    @if (Auth.Can(Permissions.ItemsManage))
+    {
+        <div class="card stat">
+            <div class="stat-label">Total inventory value</div>
+            <div class="stat-value">@Fmt.Money(_rows.Sum(r => r.QuantityOnHand * r.UnitCost))</div>
+        </div>
+    }
+    <div class="card stat">
+        <div class="stat-label">Low / critical</div>
+        <div class="stat-value">@_rows.Count(r => r.Status == StockStatus.LowStock || r.Status == StockStatus.Critical)</div>
+    </div>
+    <div class="card stat">
+        <div class="stat-label">Out of stock</div>
+        <div class="stat-value">@_rows.Count(r => r.Status == StockStatus.OutOfStock)</div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="toolbar">
+        <input class="input" placeholder="Search name or SKU..." @bind="_search" @bind:event="oninput" />
+        <select class="input" @bind="_categoryFilter">
+            <option value="0">All categories</option>
+            @foreach (var c in _categories)
+            {
+                <option value="@c.CategoryId">@c.Name</option>
+            }
+        </select>
+        <select class="input" @bind="_statusFilter">
+            <option value="All">All stock statuses</option>
+            <option value="LowCritical">Low or critical</option>
+            <option value="InStock">In Stock</option>
+            <option value="LowStock">Low Stock</option>
+            <option value="Critical">Critical</option>
+            <option value="OutOfStock">Out of Stock</option>
+            <option value="Overstock">Overstock</option>
+        </select>
+        <select class="input" @bind="_movementFilter">
+            <option value="All">All movement types</option>
+            <option value="FastMoving">Fast-Moving</option>
+            <option value="ModerateMoving">Moderate-Moving</option>
+            <option value="SlowMoving">Slow-Moving</option>
+            <option value="None">Not analyzed yet</option>
+        </select>
+    </div>
+
+    @if (_loading)
+    {
+        <p class="muted">Loading...</p>
+    }
+    else
+    {
+        var rows = Visible().ToList();
+        if (rows.Count == 0)
+        {
+            <div class="empty-state">No items match the current filters.</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th class="th-sort" @onclick='() => Sort("item")'>Item @Arrow("item")</th>
+                            <th class="th-sort" @onclick='() => Sort("category")'>Category @Arrow("category")</th>
+                            <th class="th-sort num" @onclick='() => Sort("qty")'>Current quantity @Arrow("qty")</th>
+                            <th>Unit</th>
+                            <th class="th-sort num" @onclick='() => Sort("reorder")'>Reorder point @Arrow("reorder")</th>
+                            <th class="th-sort num" @onclick='() => Sort("safety")'>Safety stock @Arrow("safety")</th>
+                            <th>Movement</th>
+                            <th class="th-sort" @onclick='() => Sort("status")'>Stock status @Arrow("status")</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var r in rows)
+                    {
+                        <tr>
+                            <td>@r.ItemName <span class="muted small">@r.Sku</span></td>
+                            <td>@r.CategoryName</td>
+                            <td class="num"><strong>@Fmt.Qty(r.QuantityOnHand)</strong></td>
+                            <td>@r.Unit</td>
+                            <td class="num">@Fmt.Qty(r.ReorderPoint)</td>
+                            <td class="num">@Fmt.Qty(r.SafetyStock)</td>
+                            <td class="muted">@StockStatusUi.Movement(r.Movement)</td>
+                            <td><Badge Kind="@StockStatusUi.Kind(r.Status)" Text="@StockStatusUi.Label(r.Status)" /></td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+            <p class="muted small">Showing @rows.Count of @_rows.Count active items. Movement classification is calculated in Phase 6.</p>
+        }
+    }
+</div>
+
+@code {
+    private List<InventoryRow> _rows = new();
+    private List<CategoryRow> _categories = new();
+    private bool _loading = true;
+    private string? _error;
+
+    private string _search = string.Empty;
+    private int _categoryFilter;
+    private string _statusFilter = "All";
+    private string _movementFilter = "All";
+    private string _sortBy = "item";
+    private bool _desc;
+
+    // Lets the Dashboard cards open this page already filtered, e.g. /inventory?status=OutOfStock
+    [Parameter, SupplyParameterFromQuery(Name = "status")] public string? StatusQuery { get; set; }
+
+    // e.g. /inventory?search=Black%20Ink (used by the "Open" button on alerts)
+    [Parameter, SupplyParameterFromQuery(Name = "search")] public string? SearchQuery { get; set; }
+
+    private static readonly string[] AllowedStatusFilters =
+        { "InStock", "LowStock", "Critical", "OutOfStock", "Overstock", "LowCritical" };
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (StatusQuery is not null && AllowedStatusFilters.Contains(StatusQuery))
+            _statusFilter = StatusQuery;
+
+        if (!string.IsNullOrWhiteSpace(SearchQuery)) _search = SearchQuery;
+
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            _rows = await InventorySvc.GetMonitoringAsync();
+            _categories = (await CategorySvc.ListAsync()).Where(c => c.Status == RecordStatus.Active).ToList();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading inventory monitoring failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    private void Sort(string key)
+    {
+        if (_sortBy == key)
+        {
+            _desc = !_desc;
+        }
+        else
+        {
+            _sortBy = key;
+            _desc = false;
+        }
+    }
+
+    private string Arrow(string key) => _sortBy != key ? string.Empty : (_desc ? "\u25BC" : "\u25B2");
+
+    private IEnumerable<InventoryRow> Visible()
+    {
+        IEnumerable<InventoryRow> q = _rows;
+
+        if (!string.IsNullOrWhiteSpace(_search))
+        {
+            q = q.Where(r => r.ItemName.Contains(_search, StringComparison.OrdinalIgnoreCase)
+                             || r.Sku.Contains(_search, StringComparison.OrdinalIgnoreCase));
+        }
+        if (_categoryFilter != 0) q = q.Where(r => r.CategoryId == _categoryFilter);
+        if (_statusFilter == "LowCritical")
+            q = q.Where(r => r.Status == StockStatus.LowStock || r.Status == StockStatus.Critical);
+        else if (_statusFilter != "All")
+            q = q.Where(r => r.Status.ToString() == _statusFilter);
+        if (_movementFilter == "None") q = q.Where(r => r.Movement is null);
+        else if (_movementFilter != "All") q = q.Where(r => r.Movement?.ToString() == _movementFilter);
+
+        Func<InventoryRow, object> key = _sortBy switch
+        {
+            "category" => r => r.CategoryName,
+            "qty" => r => r.QuantityOnHand,
+            "reorder" => r => r.ReorderPoint,
+            "safety" => r => r.SafetyStock,
+            "status" => r => StockStatusUi.Severity(r.Status),
+            _ => r => r.ItemName
+        };
+
+        return _desc ? q.OrderByDescending(key) : q.OrderBy(key);
+    }
+}

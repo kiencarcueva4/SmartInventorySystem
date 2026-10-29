@@ -1,0 +1,24 @@
+<div class="modal-backdrop">
+    <div class="modal small-modal" role="alertdialog" aria-modal="true">
+        <div class="modal-header">
+            <h2>@Title</h2>
+        </div>
+        <div class="modal-body">
+            <p>@Message</p>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" @onclick="OnCancel">Cancel</button>
+                <button type="button" class="btn @(Danger ? "btn-danger" : "btn-primary")" @onclick="OnConfirm" disabled="@Busy">@ConfirmText</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Title { get; set; } = "Please confirm";
+    [Parameter] public string Message { get; set; } = string.Empty;
+    [Parameter] public string ConfirmText { get; set; } = "Confirm";
+    [Parameter] public bool Danger { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback OnConfirm { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+}

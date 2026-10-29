@@ -1,0 +1,280 @@
+@page "/users"
+@attribute [Authorize(Policy = Permissions.UsersManage)]
+@inject IUserService UserSvc
+@inject IAuthService Auth
+
+<div class="page-header">
+    <h1 class="page-title">Users</h1>
+    <button type="button" class="btn btn-primary" @onclick="OpenAdd">+ Add user</button>
+</div>
+
+@if (_message is not null)
+{
+    <div class="alert alert-success" role="status">@_message</div>
+}
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+<div class="card">
+    @if (_loading)
+    {
+        <p class="muted">Loading...</p>
+    }
+    else if (_users.Count == 0)
+    {
+        <div class="empty-state">No users found.</div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table class="table">
+                <thead>
+                    <tr><th>Username</th><th>Full name</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr>
+                </thead>
+                <tbody>
+                @foreach (var u in _users)
+                {
+                    <tr>
+                        <td>@u.Username @(u.UserId == Auth.Current?.UserId ? "(you)" : string.Empty)</td>
+                        <td>@u.FullName</td>
+                        <td><Badge Kind="info" Text="@u.RoleName" /></td>
+                        <td>
+                            <Badge Kind="@(u.Status == RecordStatus.Active ? "ok" : "muted")" Text="@u.Status.ToString()" />
+                            @if (u.MustChangePassword)
+                            {
+                                <span class="muted small">must change password</span>
+                            }
+                        </td>
+                        <td>@(u.LastLoginAt is DateTime d ? Fmt.Local(d) : "never")</td>
+                        <td class="actions">
+                            <button type="button" class="btn btn-sm btn-secondary" @onclick="() => OpenEdit(u)">Edit</button>
+                            <button type="button" class="btn btn-sm btn-secondary" @onclick="() => OpenReset(u)">Reset password</button>
+                            @if (u.UserId != Auth.Current?.UserId)
+                            {
+                                <button type="button" class="btn btn-sm btn-secondary" @onclick="() => _toggle = u">
+                                    @(u.Status == RecordStatus.Active ? "Deactivate" : "Activate")
+                                </button>
+                                <button type="button" class="btn btn-sm btn-danger" @onclick="() => _delete = u">Delete</button>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@if (_form is not null)
+{
+    <Modal Title="@(_form.UserId == 0 ? "Add user" : "Edit user")" OnClose="CloseForm">
+        <EditForm Model="_form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+            @if (_formError is not null)
+            {
+                <div class="alert alert-error" role="alert">@_formError</div>
+            }
+
+            <label for="u-name">Username</label>
+            <InputText id="u-name" class="input" @bind-Value="_form.Username" disabled="@(_form.UserId != 0)" />
+            <ValidationMessage For="() => _form.Username" />
+            @if (_form.UserId == 0)
+            {
+                <p class="hint">Letters, numbers, dot, dash or underscore (3-50 characters). It cannot be changed later.</p>
+            }
+
+            <label for="u-full">Full name</label>
+            <InputText id="u-full" class="input" @bind-Value="_form.FullName" />
+            <ValidationMessage For="() => _form.FullName" />
+
+            <label for="u-role">Role</label>
+            <InputSelect id="u-role" class="input" @bind-Value="_form.RoleId" disabled="@(_form.UserId == Auth.Current?.UserId)">
+                <option value="0">Select role...</option>
+                @foreach (var r in _roles)
+                {
+                    <option value="@r.RoleId">@r.Name</option>
+                }
+            </InputSelect>
+            <ValidationMessage For="() => _form.RoleId" />
+
+            @if (_form.UserId == 0)
+            {
+                <label for="u-pass">Temporary password</label>
+                <InputText id="u-pass" type="password" class="input" @bind-Value="_form.Password" autocomplete="new-password" />
+                <p class="hint">@PasswordPolicy.Requirements The person must change it at first sign-in.</p>
+            }
+
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" @onclick="CloseForm">Cancel</button>
+                <button type="submit" class="btn btn-primary" disabled="@_busy">@(_busy ? "Saving..." : "Save")</button>
+            </div>
+        </EditForm>
+    </Modal>
+}
+
+@if (_resetUser is not null)
+{
+    <Modal Title="@($"Reset password - {_resetUser.Username}")" OnClose="CloseReset">
+        @if (_formError is not null)
+        {
+            <div class="alert alert-error" role="alert">@_formError</div>
+        }
+        <label for="r-pass">New temporary password</label>
+        <input id="r-pass" class="input" type="password" autocomplete="new-password" @bind="_resetPassword" @bind:event="oninput" />
+        <p class="hint">@PasswordPolicy.Requirements The person must change it at next sign-in.</p>
+        <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" @onclick="CloseReset">Cancel</button>
+            <button type="button" class="btn btn-primary" @onclick="ResetAsync" disabled="@_busy">@(_busy ? "Saving..." : "Reset password")</button>
+        </div>
+    </Modal>
+}
+
+@if (_delete is not null)
+{
+    <ConfirmDialog Title="Delete user?"
+                   Message="@($"Permanently delete the user '{_delete.Username}'? This cannot be undone. Accounts that have signed in or recorded anything cannot be deleted - deactivate them instead.")"
+                   ConfirmText="Delete"
+                   Danger="true"
+                   Busy="_busy"
+                   OnConfirm="ConfirmDeleteAsync"
+                   OnCancel="() => _delete = null" />
+}
+
+@if (_toggle is not null)
+{
+    <ConfirmDialog Title="@(_toggle.Status == RecordStatus.Active ? "Deactivate user?" : "Activate user?")"
+                   Message="@($"{(_toggle.Status == RecordStatus.Active ? "Deactivate" : "Activate")} the account '{_toggle.Username}'? {(_toggle.Status == RecordStatus.Active ? "They will no longer be able to sign in." : string.Empty)}")"
+                   ConfirmText="@(_toggle.Status == RecordStatus.Active ? "Deactivate" : "Activate")"
+                   Danger="@(_toggle.Status == RecordStatus.Active)"
+                   Busy="_busy"
+                   OnConfirm="ConfirmToggleAsync"
+                   OnCancel="() => _toggle = null" />
+}
+
+@code {
+    private List<UserRow> _users = new();
+    private List<RoleOption> _roles = new();
+    private UserInput? _form;
+    private UserRow? _resetUser;
+    private UserRow? _toggle;
+    private string _resetPassword = string.Empty;
+    private bool _loading = true;
+    private bool _busy;
+    private string? _message, _error, _formError;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _users = await UserSvc.ListAsync();
+            _roles = await UserSvc.RolesAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading users failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    private void OpenAdd()
+    {
+        _message = _error = _formError = null;
+        _form = new UserInput();
+    }
+
+    private void OpenEdit(UserRow u)
+    {
+        _message = _error = _formError = null;
+        _form = new UserInput { UserId = u.UserId, Username = u.Username, FullName = u.FullName, RoleId = u.RoleId };
+    }
+
+    private UserRow? _delete;
+
+    private async Task ConfirmDeleteAsync()
+    {
+        if (_delete is null) return;
+        _busy = true;
+        var result = await UserSvc.DeleteAsync(_delete.UserId, Auth.Current!.UserId);
+        _busy = false;
+        _delete = null;
+
+        _message = result.Success ? result.Message : null;
+        _error = result.Success ? null : result.Error;
+        await LoadAsync();
+    }
+
+    private void CloseForm() => _form = null;
+
+    private async Task SaveAsync()
+    {
+        if (_form is null) return;
+        _busy = true;
+        _formError = null;
+        var result = await UserSvc.SaveAsync(_form, Auth.Current!.UserId);
+        _busy = false;
+
+        if (result.Success)
+        {
+            _form = null;
+            _message = result.Message;
+            await LoadAsync();
+        }
+        else
+        {
+            _formError = result.Error;
+        }
+    }
+
+    private void OpenReset(UserRow u)
+    {
+        _message = _error = _formError = null;
+        _resetPassword = string.Empty;
+        _resetUser = u;
+    }
+
+    private void CloseReset()
+    {
+        _resetUser = null;
+        _resetPassword = string.Empty;
+    }
+
+    private async Task ResetAsync()
+    {
+        if (_resetUser is null) return;
+        _busy = true;
+        _formError = null;
+        var result = await UserSvc.ResetPasswordAsync(_resetUser.UserId, _resetPassword, Auth.Current!.UserId);
+        _busy = false;
+
+        if (result.Success)
+        {
+            CloseReset();
+            _message = result.Message;
+            await LoadAsync();
+        }
+        else
+        {
+            _formError = result.Error;
+        }
+    }
+
+    private async Task ConfirmToggleAsync()
+    {
+        if (_toggle is null) return;
+        _busy = true;
+        var makeActive = _toggle.Status != RecordStatus.Active;
+        var result = await UserSvc.SetActiveAsync(_toggle.UserId, makeActive, Auth.Current!.UserId);
+        _busy = false;
+        _toggle = null;
+
+        _message = result.Success ? result.Message : null;
+        _error = result.Success ? null : result.Error;
+        await LoadAsync();
+    }
+}

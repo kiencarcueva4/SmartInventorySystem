@@ -1,0 +1,213 @@
+@page "/categories"
+@attribute [Authorize(Policy = Permissions.CategoriesManage)]
+@inject ICategoryService CategorySvc
+@inject IAuthService Auth
+
+<div class="page-header">
+    <h1 class="page-title">Categories</h1>
+    <button type="button" class="btn btn-primary" @onclick="OpenAdd">+ Add category</button>
+</div>
+
+@if (_message is not null)
+{
+    <div class="alert alert-success" role="status">@_message</div>
+}
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+<div class="card">
+    <div class="toolbar">
+        <input class="input" placeholder="Search categories..." @bind="_search" @bind:event="oninput" />
+        <select class="input" @bind="_statusFilter">
+            <option value="Active">Active</option>
+            <option value="Inactive">Inactive</option>
+            <option value="All">All</option>
+        </select>
+    </div>
+
+    @if (_loading)
+    {
+        <p class="muted">Loading...</p>
+    }
+    else
+    {
+        var rows = Filtered.ToList();
+        if (rows.Count == 0)
+        {
+            <div class="empty-state">No categories found.</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr><th>Category</th><th>Description</th><th class="num">Items</th><th>Status</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var r in rows)
+                    {
+                        <tr>
+                            <td>@r.Name</td>
+                            <td class="muted">@r.Description</td>
+                            <td class="num">@r.ItemCount</td>
+                            <td><Badge Kind="@(r.Status == RecordStatus.Active ? "ok" : "muted")" Text="@r.Status.ToString()" /></td>
+                            <td class="actions">
+                                <button type="button" class="btn btn-sm btn-secondary" @onclick="() => OpenEdit(r)">Edit</button>
+                                <button type="button" class="btn btn-sm btn-secondary" @onclick="() => _toggle = r">
+                                    @(r.Status == RecordStatus.Active ? "Deactivate" : "Activate")
+                                </button>
+                                <button type="button" class="btn btn-sm btn-danger" @onclick="() => _delete = r">Delete</button>
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    }
+</div>
+
+@if (_form is not null)
+{
+    <Modal Title="@(_form.CategoryId == 0 ? "Add category" : "Edit category")" OnClose="CloseForm">
+        <EditForm Model="_form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+            @if (_formError is not null)
+            {
+                <div class="alert alert-error" role="alert">@_formError</div>
+            }
+
+            <label for="cat-name">Category name</label>
+            <InputText id="cat-name" class="input" @bind-Value="_form.CategoryName" />
+            <ValidationMessage For="() => _form.CategoryName" />
+
+            <label for="cat-desc">Description (optional)</label>
+            <InputText id="cat-desc" class="input" @bind-Value="_form.Description" />
+            <ValidationMessage For="() => _form.Description" />
+
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" @onclick="CloseForm">Cancel</button>
+                <button type="submit" class="btn btn-primary" disabled="@_busy">@(_busy ? "Saving..." : "Save")</button>
+            </div>
+        </EditForm>
+    </Modal>
+}
+
+@if (_delete is not null)
+{
+    <ConfirmDialog Title="Delete category?"
+                   Message="@($"Permanently delete the category '{_delete.Name}'? This cannot be undone. A category that still has items cannot be deleted.")"
+                   ConfirmText="Delete"
+                   Danger="true"
+                   Busy="_busy"
+                   OnConfirm="ConfirmDeleteAsync"
+                   OnCancel="() => _delete = null" />
+}
+
+@if (_toggle is not null)
+{
+    <ConfirmDialog Title="@(_toggle.Status == RecordStatus.Active ? "Deactivate category?" : "Activate category?")"
+                   Message="@($"{(_toggle.Status == RecordStatus.Active ? "Deactivate" : "Activate")} the category '{_toggle.Name}'?")"
+                   ConfirmText="@(_toggle.Status == RecordStatus.Active ? "Deactivate" : "Activate")"
+                   Danger="@(_toggle.Status == RecordStatus.Active)"
+                   Busy="_busy"
+                   OnConfirm="ConfirmToggleAsync"
+                   OnCancel="() => _toggle = null" />
+}
+
+@code {
+    private List<CategoryRow> _all = new();
+    private bool _loading = true;
+    private bool _busy;
+    private string _search = string.Empty;
+    private string _statusFilter = "Active";
+    private string? _message, _error, _formError;
+    private CategoryInput? _form;
+    private CategoryRow? _toggle;
+
+    private IEnumerable<CategoryRow> Filtered => _all
+        .Where(c => string.IsNullOrWhiteSpace(_search) || c.Name.Contains(_search, StringComparison.OrdinalIgnoreCase))
+        .Where(c => _statusFilter == "All" || c.Status.ToString() == _statusFilter);
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _all = await CategorySvc.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading categories failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    private void OpenAdd()
+    {
+        _message = _error = _formError = null;
+        _form = new CategoryInput();
+    }
+
+    private void OpenEdit(CategoryRow row)
+    {
+        _message = _error = _formError = null;
+        _form = new CategoryInput { CategoryId = row.CategoryId, CategoryName = row.Name, Description = row.Description };
+    }
+
+    private CategoryRow? _delete;
+
+    private async Task ConfirmDeleteAsync()
+    {
+        if (_delete is null) return;
+        _busy = true;
+        var result = await CategorySvc.DeleteAsync(_delete.CategoryId, Auth.Current!.UserId);
+        _busy = false;
+        _delete = null;
+
+        _message = result.Success ? result.Message : null;
+        _error = result.Success ? null : result.Error;
+        await LoadAsync();
+    }
+
+    private void CloseForm() => _form = null;
+
+    private async Task SaveAsync()
+    {
+        if (_form is null) return;
+        _busy = true;
+        _formError = null;
+        var result = await CategorySvc.SaveAsync(_form, Auth.Current!.UserId);
+        _busy = false;
+
+        if (result.Success)
+        {
+            _form = null;
+            _message = result.Message;
+            await LoadAsync();
+        }
+        else
+        {
+            _formError = result.Error;
+        }
+    }
+
+    private async Task ConfirmToggleAsync()
+    {
+        if (_toggle is null) return;
+        _busy = true;
+        var makeActive = _toggle.Status != RecordStatus.Active;
+        var result = await CategorySvc.SetActiveAsync(_toggle.CategoryId, makeActive, Auth.Current!.UserId);
+        _busy = false;
+        _toggle = null;
+
+        _message = result.Success ? result.Message : null;
+        _error = result.Success ? null : result.Error;
+        await LoadAsync();
+    }
+}

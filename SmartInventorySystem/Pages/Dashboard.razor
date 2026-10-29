@@ -1,0 +1,391 @@
+@page "/"
+@attribute [Authorize(Policy = Permissions.DashboardView)]
+@inject IAuthService Auth
+@inject IDashboardService DashboardSvc
+@inject IStockService StockSvc
+@inject IAlertService AlertSvc
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Welcome, @Auth.Current?.FullName</h1>
+        <p class="muted">@DateTime.Now.ToString("dddd, MMMM d, yyyy") &middot; <span class="badge">@Auth.Current?.RoleName</span></p>
+    </div>
+    <button type="button" class="btn btn-secondary" @onclick="LoadAsync">Refresh</button>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+@if (_loading)
+{
+    <p class="muted">Loading dashboard...</p>
+}
+else if (_d is not null)
+{
+    @* ---------------- key numbers ---------------- *@
+    <div class="grid">
+        <a class="card stat stat-link" href="/inventory">
+            <div class="stat-label">Active items</div>
+            <div class="stat-value">@_d.TotalItems</div>
+            <div class="stat-sub">Open inventory monitoring</div>
+        </a>
+        @if (Auth.Can(Permissions.ItemsManage))
+        {
+            <a class="card stat stat-link" href="/inventory">
+                <div class="stat-label">Inventory value</div>
+                <div class="stat-value">@Fmt.Money(_d.TotalValue)</div>
+                <div class="stat-sub">Open inventory monitoring</div>
+            </a>
+        }
+        <a class="card stat stat-link @(LowCount > 0 ? "stat-warn" : string.Empty)" href="/inventory?status=LowCritical">
+            <div class="stat-label">Low / critical stock</div>
+            <div class="stat-value">@LowCount</div>
+            <div class="stat-sub">Click to see these items</div>
+        </a>
+        <a class="card stat stat-link @(OutCount > 0 ? "stat-danger" : string.Empty)" href="/inventory?status=OutOfStock">
+            <div class="stat-label">Out of stock</div>
+            <div class="stat-value">@OutCount</div>
+            <div class="stat-sub">Click to see these items</div>
+        </a>
+        @if (Auth.Can(Permissions.AnalyticsView))
+        {
+            <a class="card stat stat-link @(_d.RiskTotal > 0 ? "stat-danger" : string.Empty)" href="/alerts">
+                <div class="stat-label">Stockout-risk items</div>
+                <div class="stat-value">@_d.RiskTotal</div>
+                <div class="stat-sub">Last 30 days of usage. Click for alerts</div>
+            </a>
+        }
+        @if (Auth.Can(Permissions.AlertsView))
+        {
+            <a class="card stat stat-link @(_openAlerts > 0 ? "stat-warn" : string.Empty)" href="/alerts">
+                <div class="stat-label">Open alerts</div>
+                <div class="stat-value">@_openAlerts</div>
+                <div class="stat-sub">Click to review</div>
+            </a>
+        }
+        @if (Auth.Can(Permissions.RecommendationsView))
+        {
+            <a class="card stat stat-link @(_d.UrgentPending > 0 ? "stat-danger" : string.Empty)" href="/reorder/recommendations">
+                <div class="stat-label">Urgent reorders</div>
+                <div class="stat-value">@(_d.HasRecommendations ? _d.UrgentPending.ToString() : "n/a")</div>
+                <div class="stat-sub">@(_d.HasRecommendations ? $"{_d.PendingTotal} pending in total" : "Run Evaluate inventory first")</div>
+            </a>
+        }
+    </div>
+
+    @* ---------------- stock status + usage chart ---------------- *@
+    <div class="grid-2">
+        <div class="card">
+            <h2>Stock status</h2>
+            <p class="muted small">Number of active items in each status.</p>
+            <BarList Items="StatusBars()" />
+        </div>
+        <div class="card">
+            <h2>Material usage per day</h2>
+            <p class="muted small">Usage transactions recorded each day, last 30 days (@_d.UsageTransactionsInWindow total).</p>
+            <ColumnChart Points="_d.DailyUsage" Title="Usage transactions per day" EmptyText="No usage recorded yet." />
+        </div>
+    </div>
+
+    @* ---------------- attention lists ---------------- *@
+    <div class="grid-2">
+        <div class="card">
+            <div class="card-title-row">
+                <h2>Items needing attention</h2>
+                <a href="/inventory">View inventory</a>
+            </div>
+            @if (_d.LowStock.Count == 0)
+            {
+                <div class="empty-state">All items are above their reorder points.</div>
+            }
+            else
+            {
+                <div class="table-wrap">
+                    <table class="table">
+                        <thead><tr><th>Item</th><th class="num">On hand</th><th class="num">Reorder pt</th><th>Status</th></tr></thead>
+                        <tbody>
+                        @foreach (var r in _d.LowStock)
+                        {
+                            <tr>
+                                <td>@r.Name</td>
+                                <td class="num">@Fmt.Qty(r.Quantity) @r.Unit</td>
+                                <td class="num">@Fmt.Qty(r.ReorderPoint)</td>
+                                <td><Badge Kind="@StockStatusUi.Kind(r.Status)" Text="@StockStatusUi.Label(r.Status)" /></td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+                @if (_d.AttentionTotal > _d.LowStock.Count)
+                {
+                    <p class="muted small">Showing @_d.LowStock.Count of @_d.AttentionTotal items.</p>
+                }
+            }
+        </div>
+
+        @if (Auth.Can(Permissions.AnalyticsView))
+        {
+            <div class="card">
+                <h2>Stockout risk</h2>
+                <p class="muted small">Days of stock left compared with supplier lead time.</p>
+                @if (_d.Risks.Count == 0)
+                {
+                    <div class="empty-state">No items are at risk based on recent usage.</div>
+                }
+                else
+                {
+                    <div class="table-wrap">
+                        <table class="table">
+                            <thead><tr><th>Item</th><th class="num">Days left</th><th class="num">Lead time</th><th>Risk</th></tr></thead>
+                            <tbody>
+                            @foreach (var r in _d.Risks)
+                            {
+                                <tr>
+                                    <td>@r.Name <span class="muted small">(@Fmt.Qty(r.AvgDailyUsage) @r.Unit/day)</span></td>
+                                    <td class="num">@Fmt.Qty(r.DaysOfCover)</td>
+                                    <td class="num">@r.LeadTimeDays d</td>
+                                    <td><Badge Kind="@(r.Risk == "High" ? "danger" : "warn")" Text="@r.Risk" /></td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    @* ---------------- analytics summaries ---------------- *@
+    @if (Auth.Can(Permissions.AnalyticsView))
+    {
+        <div class="grid-2">
+            <div class="card">
+                <h2>Movement summary</h2>
+                <p class="muted small">Fast, moderate and slow-moving items.</p>
+                @if (_d.Movement.HasData)
+                {
+                    <BarList Items="MovementBars()" />
+                }
+                else
+                {
+                    <div class="empty-state">Not available yet. Movement classification is built in Phase 6.</div>
+                }
+            </div>
+            <div class="card">
+                <h2>Inventory trend summary</h2>
+                <p class="muted small">Latest trend direction per item.</p>
+                @if (_d.Trend.HasData)
+                {
+                    <BarList Items="TrendBars()" />
+                }
+                else
+                {
+                    <div class="empty-state">Not available yet. Inventory trend analysis is built in Phase 6.</div>
+                }
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Top materials by consumption value</h2>
+            <p class="muted small">Quantity used x unit cost, last 30 days.</p>
+            <BarList Items="TopBars()" EmptyText="No usage recorded in the last 30 days." />
+        </div>
+    }
+
+    @* ---------------- recommendations ---------------- *@
+    @if (Auth.Can(Permissions.RecommendationsView))
+    {
+        <div class="card">
+            <div class="card-title-row">
+                <h2>Recent reorder recommendations</h2>
+                <a href="/reorder/recommendations">View all</a>
+            </div>
+            @if (_d.RecentRecommendations.Count == 0)
+            {
+                <div class="empty-state">No recommendations yet. Open Recommendations and click Evaluate inventory.</div>
+            }
+            else
+            {
+                <div class="table-wrap">
+                    <table class="table">
+                        <thead><tr><th>Date</th><th>Item</th><th class="num">Recommended qty</th><th>Priority</th><th>Status</th></tr></thead>
+                        <tbody>
+                        @foreach (var r in _d.RecentRecommendations)
+                        {
+                            <tr>
+                                <td>@Fmt.Local(r.CreatedAt)</td>
+                                <td><a href="/reorder/recommendations/@r.Id">@r.ItemName</a></td>
+                                <td class="num">@Fmt.Qty(r.RecommendedQuantity) @r.Unit</td>
+                                <td><Badge Kind="@UrgencyUi.Kind(r.Urgency)" Text="@UrgencyUi.Label(r.Urgency)" /></td>
+                                <td>@r.Status</td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    }
+
+    @* ---------------- recent transactions ---------------- *@
+    <div class="grid-2">
+        @if (Auth.Can(Permissions.StockInRecord))
+        {
+            <div class="card">
+                <div class="card-title-row">
+                    <h2>Recent stock-in</h2>
+                    <a href="/stock-in">Record stock-in</a>
+                </div>
+                @if (_stockIns.Count == 0)
+                {
+                    <div class="empty-state">No stock-in recorded yet.</div>
+                }
+                else
+                {
+                    <div class="table-wrap">
+                        <table class="table">
+                            <thead><tr><th>Date</th><th>Item</th><th class="num">Qty</th></tr></thead>
+                            <tbody>
+                            @foreach (var s in _stockIns)
+                            {
+                                <tr>
+                                    <td>@Fmt.Local(s.Date)</td>
+                                    <td>@s.ItemName</td>
+                                    <td class="num">@Fmt.Qty(s.Quantity) @s.Unit</td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        }
+        @if (Auth.Can(Permissions.StockOutRecord))
+        {
+            <div class="card">
+                <div class="card-title-row">
+                    <h2>Recent stock-out</h2>
+                    <a href="/stock-out">Record usage</a>
+                </div>
+                @if (_stockOuts.Count == 0)
+                {
+                    <div class="empty-state">No stock-out recorded yet.</div>
+                }
+                else
+                {
+                    <div class="table-wrap">
+                        <table class="table">
+                            <thead><tr><th>Date</th><th>Material</th><th class="num">Qty</th><th>Job</th></tr></thead>
+                            <tbody>
+                            @foreach (var s in _stockOuts)
+                            {
+                                <tr>
+                                    <td>@Fmt.Local(s.Date)</td>
+                                    <td>@s.ItemName</td>
+                                    <td class="num">@Fmt.Qty(s.Quantity) @s.Unit</td>
+                                    <td class="muted">@s.JobReference</td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    @if (Auth.Can(Permissions.UsersManage))
+    {
+        <p class="muted small">Database file: @AppPaths.DatabasePath
+            <button type="button" class="link-btn" @onclick="OpenFolder">Open folder</button></p>
+    }
+}
+
+@code {
+    private DashboardData? _d;
+    private int _openAlerts;
+    private List<StockInRow> _stockIns = new();
+    private List<StockOutRow> _stockOuts = new();
+    private bool _loading = true;
+    private string? _error;
+
+    private int LowCount => _d is null ? 0
+        : _d.StatusCounts.GetValueOrDefault(StockStatus.LowStock) + _d.StatusCounts.GetValueOrDefault(StockStatus.Critical);
+
+    private int OutCount => _d?.StatusCounts.GetValueOrDefault(StockStatus.OutOfStock) ?? 0;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            _d = await DashboardSvc.GetAsync();
+
+            if (Auth.Can(Permissions.AlertsView))
+            {
+                try
+                {
+                    _openAlerts = await AlertSvc.RefreshAsync();
+                }
+                catch (Exception alertEx)
+                {
+                    AppLogger.Error("Refreshing alerts failed.", alertEx);
+                }
+            }
+
+            _stockIns = Auth.Can(Permissions.StockInRecord) ? await StockSvc.RecentStockInsAsync(5) : new();
+            _stockOuts = Auth.Can(Permissions.StockOutRecord) ? await StockSvc.RecentStockOutsAsync(5) : new();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Dashboard failed to load.", ex);
+            _error = "Unable to load the dashboard. Please check the log file and try again.";
+        }
+        _loading = false;
+    }
+
+    private List<BarItem> StatusBars()
+    {
+        var order = new[] { StockStatus.InStock, StockStatus.LowStock, StockStatus.Critical, StockStatus.OutOfStock, StockStatus.Overstock };
+        return order.Select(s =>
+        {
+            var count = _d!.StatusCounts.GetValueOrDefault(s);
+            return new BarItem(StockStatusUi.Label(s), count, count.ToString(), StockStatusUi.Kind(s));
+        }).ToList();
+    }
+
+    private List<BarItem> MovementBars() => new()
+    {
+        new BarItem("Fast-Moving", _d!.Movement.Fast, _d.Movement.Fast.ToString(), "ok"),
+        new BarItem("Moderate-Moving", _d.Movement.Moderate, _d.Movement.Moderate.ToString(), "info"),
+        new BarItem("Slow-Moving", _d.Movement.Slow, _d.Movement.Slow.ToString(), "warn"),
+        new BarItem("Not analyzed", _d.Movement.NotAnalyzed, _d.Movement.NotAnalyzed.ToString(), "muted"),
+    };
+
+    private List<BarItem> TrendBars() => new()
+    {
+        new BarItem("Increasing", _d!.Trend.Increasing, _d.Trend.Increasing.ToString(), "info"),
+        new BarItem("Stable", _d.Trend.Stable, _d.Trend.Stable.ToString(), "ok"),
+        new BarItem("Decreasing", _d.Trend.Decreasing, _d.Trend.Decreasing.ToString(), "warn"),
+        new BarItem("Irregular", _d.Trend.Irregular, _d.Trend.Irregular.ToString(), "muted"),
+    };
+
+    private List<BarItem> TopBars() => _d!.TopMaterials
+        .Select(t => new BarItem(t.Name, (double)t.ConsumptionValue, Fmt.Money(t.ConsumptionValue), "info"))
+        .ToList();
+
+    private void OpenFolder()
+    {
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "explorer.exe",
+            Arguments = "\"" + AppPaths.DataFolder + "\"",
+            UseShellExecute = true
+        });
+    }
+}

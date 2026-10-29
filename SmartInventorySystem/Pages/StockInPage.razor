@@ -1,0 +1,176 @@
+@page "/stock-in"
+@attribute [Authorize(Policy = Permissions.StockInRecord)]
+@inject IInventoryService InventorySvc
+@inject IStockService StockSvc
+@inject ISupplierService SupplierSvc
+@inject IAuthService Auth
+
+<h1 class="page-title">Stock-In</h1>
+<p class="muted">Record materials received. Stock on hand increases when you save.</p>
+
+@if (_message is not null)
+{
+    <div class="alert alert-success" role="status">@_message</div>
+}
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+<div class="split">
+    <div class="card">
+        <h2>New stock-in</h2>
+        <EditForm Model="_form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+
+            <label for="si-item">Item</label>
+            <InputSelect id="si-item" class="input" Value="_form.ItemId"
+                         ValueChanged="@((int id) => OnItemChanged(id))"
+                         ValueExpression="@(() => _form.ItemId)">
+                <option value="0">Select item...</option>
+                @foreach (var o in _items)
+                {
+                    <option value="@o.ItemId">@o.Name (@o.Sku)</option>
+                }
+            </InputSelect>
+            <ValidationMessage For="() => _form.ItemId" />
+            @if (_selected is not null)
+            {
+                <p class="hint">Current stock: <strong>@Fmt.Qty(_selected.QuantityOnHand) @_selected.Unit</strong></p>
+            }
+
+            <label for="si-sup">Supplier</label>
+            <InputSelect id="si-sup" class="input" @bind-Value="_form.SupplierId">
+                <option value="">None</option>
+                @foreach (var s in _suppliers)
+                {
+                    <option value="@s.SupplierId">@s.Name</option>
+                }
+            </InputSelect>
+
+            <div class="form-grid">
+                <div>
+                    <label for="si-qty">Quantity</label>
+                    <InputNumber id="si-qty" class="input" @bind-Value="_form.Quantity" />
+                    <ValidationMessage For="() => _form.Quantity" />
+                </div>
+                <div>
+                    <label for="si-cost">Unit cost</label>
+                    <InputNumber id="si-cost" class="input" @bind-Value="_form.UnitCost" />
+                    <ValidationMessage For="() => _form.UnitCost" />
+                </div>
+            </div>
+            <p class="hint">Total cost: <strong>@Fmt.Money(_form.Quantity * _form.UnitCost)</strong></p>
+
+            <label for="si-ref">Reference number</label>
+            <InputText id="si-ref" class="input" placeholder="Auto-generated if left empty" @bind-Value="_form.ReferenceNumber" />
+            <ValidationMessage For="() => _form.ReferenceNumber" />
+
+            <label for="si-date">Date received</label>
+            <InputDate id="si-date" class="input" max="@TodayText" @bind-Value="_form.Date" />
+
+            <button type="submit" class="btn btn-primary" disabled="@_busy">@(_busy ? "Saving..." : "Save stock-in")</button>
+        </EditForm>
+    </div>
+
+    <div class="card">
+        <h2>Recent stock-in</h2>
+        @if (_loading)
+        {
+            <p class="muted">Loading...</p>
+        }
+        else if (_history.Count == 0)
+        {
+            <div class="empty-state">No stock-in transactions yet.</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr><th>Date</th><th>Item</th><th class="num">Qty</th><th class="num">Unit cost</th><th class="num">Total</th><th>Reference</th><th>By</th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var h in _history)
+                    {
+                        <tr>
+                            <td>@Fmt.Local(h.Date)</td>
+                            <td>@h.ItemName</td>
+                            <td class="num">@Fmt.Qty(h.Quantity) @h.Unit</td>
+                            <td class="num">@Fmt.Money(h.UnitCost)</td>
+                            <td class="num">@Fmt.Money(h.TotalCost)</td>
+                            <td>@h.Reference</td>
+                            <td>@h.ReceivedBy</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private List<StockItemOption> _items = new();
+    private List<SupplierRow> _suppliers = new();
+    private List<StockInRow> _history = new();
+    private StockInInput _form = new();
+    private StockItemOption? _selected;
+    private bool _loading = true;
+    private bool _busy;
+    private string? _message, _error;
+
+    private string TodayText => DateTime.Today.ToString("yyyy-MM-dd");
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _items = await InventorySvc.GetItemOptionsAsync();
+            _suppliers = (await SupplierSvc.ListAsync()).Where(s => s.Status == RecordStatus.Active).ToList();
+            _history = await StockSvc.RecentStockInsAsync();
+            _selected = _items.FirstOrDefault(i => i.ItemId == _form.ItemId);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading stock-in page failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    // Picking an item pre-fills the item's usual supplier and cost (you can change them).
+    private void OnItemChanged(int itemId)
+    {
+        _form.ItemId = itemId;
+        _selected = _items.FirstOrDefault(i => i.ItemId == itemId);
+        if (_selected is not null)
+        {
+            _form.SupplierId = _selected.SupplierId;
+            _form.UnitCost = _selected.UnitCost;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _busy = true;
+        _message = _error = null;
+        var result = await StockSvc.RecordStockInAsync(_form, Auth.Current!.UserId);
+        _busy = false;
+
+        if (result.Success)
+        {
+            _message = result.Message;
+            _form = new StockInInput();
+            _selected = null;
+            await LoadAsync();
+        }
+        else
+        {
+            _error = result.Error;
+        }
+    }
+}

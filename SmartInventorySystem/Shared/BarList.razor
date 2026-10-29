@@ -1,0 +1,28 @@
+@using System.Globalization
+
+@if (Items.Count == 0)
+{
+    <div class="empty-state">@EmptyText</div>
+}
+else
+{
+    var max = Math.Max(1d, Items.Max(i => i.Value));
+    foreach (var item in Items)
+    {
+        <div class="bar-row">
+            <div class="bar-label" title="@item.Label">@item.Label</div>
+            <div class="bar-track">
+                <div class="bar-fill bar-@item.Kind" style="width:@(F(item.Value / max * 100))%"></div>
+            </div>
+            <div class="bar-value">@item.Display</div>
+        </div>
+    }
+}
+
+@code {
+    [Parameter] public IReadOnlyList<BarItem> Items { get; set; } = Array.Empty<BarItem>();
+    [Parameter] public string EmptyText { get; set; } = "No data yet.";
+
+    // Always format numbers with the invariant culture so CSS values never contain a comma.
+    private static string F(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+}

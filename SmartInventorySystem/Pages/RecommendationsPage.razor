@@ -1,0 +1,182 @@
+@page "/reorder/recommendations"
+@attribute [Authorize(Policy = Permissions.RecommendationsView)]
+@inject IReorderService ReorderSvc
+@inject IAuthService Auth
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Reorder Recommendations</h1>
+        <p class="muted">
+            The system suggests what to reorder. It never orders anything by itself - the owner reviews and decides.
+        </p>
+    </div>
+    <button type="button" class="btn btn-primary" @onclick="EvaluateAsync" disabled="@_busy">
+        @(_busy ? "Evaluating..." : "Evaluate inventory")
+    </button>
+</div>
+
+@if (_message is not null)
+{
+    <div class="alert alert-success" role="status">@_message</div>
+}
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+@if (_loading)
+{
+    <p class="muted">Loading...</p>
+}
+else
+{
+    var rows = Visible().ToList();
+
+    <div class="grid">
+        <div class="card stat @(PendingUrgent > 0 ? "stat-danger" : string.Empty)">
+            <div class="stat-label">Urgent - waiting for decision</div>
+            <div class="stat-value">@PendingUrgent</div>
+        </div>
+        <div class="card stat @(PendingRecommended > 0 ? "stat-warn" : string.Empty)">
+            <div class="stat-label">Recommended - waiting for decision</div>
+            <div class="stat-value">@PendingRecommended</div>
+        </div>
+        <div class="card stat">
+            <div class="stat-label">Deferred</div>
+            <div class="stat-value">@_all.Count(r => r.Status == RecommendationStatus.Deferred)</div>
+        </div>
+        <div class="card stat">
+            <div class="stat-label">Approved - on order</div>
+            <div class="stat-value">@_all.Count(r => r.Status == RecommendationStatus.Approved)</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="toolbar">
+            <input class="input" placeholder="Search item..." @bind="_search" @bind:event="oninput" />
+            <select class="input" @bind="_urgencyFilter">
+                <option value="All">All priorities</option>
+                <option value="Urgent">Urgent</option>
+                <option value="Recommended">Recommended</option>
+                <option value="NotYetNecessary">Not yet necessary</option>
+            </select>
+            <select class="input" @bind="_statusFilter">
+                <option value="Pending">Waiting for decision</option>
+                <option value="Deferred">Deferred</option>
+                <option value="Approved">Approved (on order)</option>
+                <option value="Completed">Completed</option>
+                <option value="Dismissed">Dismissed / closed</option>
+                <option value="All">All</option>
+            </select>
+        </div>
+
+        @if (rows.Count == 0)
+        {
+            <div class="empty-state">
+                @(_all.Count == 0
+                    ? "No recommendations yet. Click Evaluate inventory to check every item."
+                    : "No recommendations match the current filters.")
+            </div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Priority</th><th>Item</th><th class="num">Current stock</th>
+                            <th class="num">Forecast (next period)</th><th class="num">Lead time</th>
+                            <th class="num">Recommended qty</th><th>Status</th><th>Date</th><th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var r in rows)
+                    {
+                        <tr>
+                            <td><Badge Kind="@UrgencyUi.Kind(r.Urgency)" Text="@UrgencyUi.Label(r.Urgency)" /></td>
+                            <td><a href="/reorder/recommendations/@r.Id">@r.ItemName</a></td>
+                            <td class="num">@Fmt.Qty(r.CurrentStock) @r.Unit</td>
+                            <td class="num">@Fmt.Qty(r.ForecastedDemand) @r.Unit</td>
+                            <td class="num">@r.LeadTimeDays d</td>
+                            <td class="num"><strong>@Fmt.Qty(r.RecommendedQuantity) @r.Unit</strong></td>
+                            <td><Badge Kind="@ReorderUi.StatusKind(r.Status)" Text="@r.Status.ToString()" /></td>
+                            <td>@Fmt.Local(r.CreatedAt)</td>
+                            <td class="actions"><a class="btn btn-sm btn-secondary" href="/reorder/recommendations/@r.Id">Review</a></td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+
+    <div class="card">
+        <h2>How recommendations are decided</h2>
+        <ul class="plain-list">
+            <li><strong>Lead-time demand</strong> = forecasted daily demand x supplier lead time.</li>
+            <li><strong>Target level</strong> = lead-time demand + safety stock.</li>
+            <li><strong>Recommended quantity</strong> = target level - current stock (never below zero, and at least the item's minimum order quantity).</li>
+            <li><strong>Urgent</strong>: out of stock, at or below safety stock, or lower than the lead-time demand (it would run out before a delivery arrives).</li>
+            <li><strong>Recommended</strong>: at or below the reorder point, or below the target level.</li>
+            <li><strong>Not yet necessary</strong>: stock is above both, so nothing is saved for review.</li>
+        </ul>
+        <p class="muted small">The daily forecast uses the Weighted Moving Average settings from the Demand Forecasting page. Forecasts are estimates, not guarantees.</p>
+    </div>
+}
+
+@code {
+    private List<RecommendationRow> _all = new();
+    private bool _loading = true;
+    private bool _busy;
+    private string? _message, _error;
+
+    private string _search = string.Empty;
+    private string _urgencyFilter = "All";
+    private string _statusFilter = "Pending";
+
+    private int PendingUrgent => _all.Count(r => r.Status == RecommendationStatus.Pending && r.Urgency == UrgencyLevel.Urgent);
+    private int PendingRecommended => _all.Count(r => r.Status == RecommendationStatus.Pending && r.Urgency == UrgencyLevel.Recommended);
+
+    [Parameter, SupplyParameterFromQuery(Name = "search")] public string? SearchQuery { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(SearchQuery)) _search = SearchQuery;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _all = await ReorderSvc.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading recommendations failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    private IEnumerable<RecommendationRow> Visible()
+    {
+        IEnumerable<RecommendationRow> q = _all;
+        if (!string.IsNullOrWhiteSpace(_search))
+            q = q.Where(r => r.ItemName.Contains(_search, StringComparison.OrdinalIgnoreCase));
+        if (_urgencyFilter != "All") q = q.Where(r => r.Urgency.ToString() == _urgencyFilter);
+        if (_statusFilter != "All") q = q.Where(r => r.Status.ToString() == _statusFilter);
+        return q;
+    }
+
+    private async Task EvaluateAsync()
+    {
+        _busy = true;
+        _message = _error = null;
+        var result = await ReorderSvc.EvaluateAsync(Auth.Current!.UserId);
+        if (result.Success) _message = result.Message; else _error = result.Error;
+        await LoadAsync();
+        _busy = false;
+    }
+}

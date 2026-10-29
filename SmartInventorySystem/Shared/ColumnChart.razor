@@ -1,0 +1,36 @@
+@using System.Globalization
+
+@if (Points.Count == 0)
+{
+    <div class="empty-state">@EmptyText</div>
+}
+else
+{
+    var max = Math.Max(1d, Points.Max(p => p.Value));
+    var every = Points.Count > 20 ? 5 : (Points.Count > 10 ? 2 : 1);
+
+    <div class="colchart" role="img" aria-label="@Title">
+        @foreach (var p in Points)
+        {
+            <div class="col-wrap" title="@p.Label: @F(p.Value)">
+                <div class="col-bar" style="height:@(F(p.Value / max * 100))%"></div>
+            </div>
+        }
+    </div>
+    <div class="colchart-labels">
+        @for (var i = 0; i < Points.Count; i++)
+        {
+            <div class="col-label">@(i % every == 0 ? Points[i].Label : string.Empty)</div>
+        }
+    </div>
+    <p class="muted small">Peak: @F(max) @PeakLabel</p>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<ChartPoint> Points { get; set; } = Array.Empty<ChartPoint>();
+    [Parameter] public string Title { get; set; } = "Chart";
+    [Parameter] public string EmptyText { get; set; } = "No data yet.";
+    [Parameter] public string PeakLabel { get; set; } = "per day";
+
+    private static string F(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+}

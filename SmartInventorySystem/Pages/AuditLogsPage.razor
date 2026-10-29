@@ -1,0 +1,125 @@
+@page "/audit-logs"
+@attribute [Authorize(Policy = Permissions.AuditView)]
+@inject IAuditQueryService AuditSvc
+
+<h1 class="page-title">Audit Logs</h1>
+<p class="muted">A read-only record of important actions: sign-ins, stock changes, decisions, settings and user management.</p>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+<div class="card">
+    <div class="toolbar">
+        <select class="input" @bind="_filter.UserId">
+            <option value="0">All users</option>
+            @foreach (var u in _lookups.Users)
+            {
+                <option value="@u.UserId">@u.Name</option>
+            }
+        </select>
+        <select class="input" @bind="_filter.Action">
+            <option value="All">All actions</option>
+            @foreach (var a in _lookups.Actions)
+            {
+                <option value="@a">@a</option>
+            }
+        </select>
+        <label class="inline-label">From <input class="input" type="date" @bind="_filter.From" /></label>
+        <label class="inline-label">To <input class="input" type="date" @bind="_filter.To" /></label>
+        <input class="input" placeholder="Search description..." @bind="_filter.Search" />
+        <button type="button" class="btn btn-primary" @onclick="SearchAsync" disabled="@_busy">Search</button>
+        <button type="button" class="btn btn-secondary" @onclick="ClearAsync" disabled="@_busy">Clear</button>
+    </div>
+
+    @if (_loading)
+    {
+        <p class="muted">Loading...</p>
+    }
+    else if (_page.Rows.Count == 0)
+    {
+        <div class="empty-state">No log entries match the filters.</div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table class="table">
+                <thead><tr><th>Date / time</th><th>User</th><th>Action</th><th>Affected record</th><th>Description</th></tr></thead>
+                <tbody>
+                @foreach (var r in _page.Rows)
+                {
+                    <tr>
+                        <td class="nowrap">@Fmt.Local(r.Timestamp)</td>
+                        <td>@r.User</td>
+                        <td><Badge Kind="info" Text="@r.Action" /></td>
+                        <td>@r.Record</td>
+                        <td class="muted">@r.Description</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pager">
+            <button type="button" class="btn btn-sm btn-secondary" @onclick="PreviousAsync" disabled="@(_busy || _page.Page <= 1)">Previous</button>
+            <span class="muted">Page @_page.Page of @TotalPages &middot; @_page.Total entries</span>
+            <button type="button" class="btn btn-sm btn-secondary" @onclick="NextAsync" disabled="@(_busy || _page.Page >= TotalPages)">Next</button>
+        </div>
+    }
+</div>
+
+@code {
+    private const int PageSize = 50;
+
+    private AuditLookups _lookups = new(new List<AuditUserOption>(), new List<string>());
+    private AuditPage _page = new(new List<AuditRow>(), 0, 1, PageSize);
+    private AuditFilter _filter = new();
+    private bool _loading = true;
+    private bool _busy;
+    private string? _error;
+
+    private int TotalPages => Math.Max(1, (int)Math.Ceiling(_page.Total / (double)PageSize));
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _lookups = await AuditSvc.LookupsAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading audit filters failed.", ex);
+        }
+        await LoadAsync(1);
+    }
+
+    private async Task LoadAsync(int page)
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            _page = await AuditSvc.QueryAsync(_filter, page, PageSize);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading audit logs failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+        _busy = false;
+    }
+
+    private Task SearchAsync() => LoadAsync(1);
+
+    private Task ClearAsync()
+    {
+        _filter = new AuditFilter();
+        return LoadAsync(1);
+    }
+
+    private Task PreviousAsync() => LoadAsync(Math.Max(1, _page.Page - 1));
+
+    private Task NextAsync() => LoadAsync(Math.Min(TotalPages, _page.Page + 1));
+}

@@ -1,0 +1,191 @@
+@page "/stock-out"
+@attribute [Authorize(Policy = Permissions.StockOutRecord)]
+@inject IInventoryService InventorySvc
+@inject IStockService StockSvc
+@inject IAuthService Auth
+@inject ISubstituteService SubstituteSvc
+
+<h1 class="page-title">Stock-Out / Material Usage</h1>
+<p class="muted">Record materials used for a customer or job. Stock on hand decreases when you save.</p>
+
+@if (_message is not null)
+{
+    <div class="alert alert-success" role="status">@_message</div>
+}
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+<div class="split">
+    <div class="card">
+        <h2>New stock-out</h2>
+        <EditForm Model="_form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+
+            <label for="so-item">Material</label>
+            <InputSelect id="so-item" class="input" Value="_form.ItemId"
+                         ValueChanged="@((int id) => OnItemChanged(id))"
+                         ValueExpression="@(() => _form.ItemId)">
+                <option value="0">Select material...</option>
+                @foreach (var o in _items)
+                {
+                    <option value="@o.ItemId">@o.Name - @Fmt.Qty(o.QuantityOnHand) @o.Unit available</option>
+                }
+            </InputSelect>
+            <ValidationMessage For="() => _form.ItemId" />
+            @if (_selected is not null)
+            {
+                <p class="hint">Available: <strong>@Fmt.Qty(_selected.QuantityOnHand) @_selected.Unit</strong></p>
+            }
+
+            <label for="so-qty">Quantity used</label>
+            <InputNumber id="so-qty" class="input" @bind-Value="_form.Quantity" />
+            <ValidationMessage For="() => _form.Quantity" />
+            @if (ExceedsStock)
+            {
+                <div class="alert alert-error" role="alert">
+                    Not enough stock. You requested @Fmt.Qty(_form.Quantity) but only
+                    @Fmt.Qty(_selected!.QuantityOnHand) @_selected.Unit is available.
+                </div>
+            }
+
+            @if (ShowSubstitutes)
+            {
+                <div class="alert alert-warn">
+                    <strong>Possible alternatives</strong> (nothing is replaced automatically - you choose):
+                    <ul class="plain-list">
+                    @foreach (var s in _subs.Take(5))
+                    {
+                        <li>
+                            @s.Name - @Fmt.Qty(s.Available) @s.Unit available
+                            <span class="muted small">(@(s.Configured ? "configured substitute" : "same category"))</span>
+                            <button type="button" class="link-btn" @onclick="() => OnItemChanged(s.ItemId)">Use instead</button>
+                        </li>
+                    }
+                    </ul>
+                </div>
+            }
+
+            <label for="so-job">Customer / job reference</label>
+            <InputText id="so-job" class="input" placeholder="e.g. Business Card Printing - Customer #001" @bind-Value="_form.JobReference" />
+            <ValidationMessage For="() => _form.JobReference" />
+
+            <label for="so-ref">Reference number</label>
+            <InputText id="so-ref" class="input" placeholder="Auto-generated if left empty" @bind-Value="_form.ReferenceNumber" />
+            <ValidationMessage For="() => _form.ReferenceNumber" />
+
+            <button type="submit" class="btn btn-primary" disabled="@(_busy || ExceedsStock)">@(_busy ? "Saving..." : "Save stock-out")</button>
+        </EditForm>
+    </div>
+
+    <div class="card">
+        <h2>Recent material usage</h2>
+        @if (_loading)
+        {
+            <p class="muted">Loading...</p>
+        }
+        else if (_history.Count == 0)
+        {
+            <div class="empty-state">No stock-out transactions yet.</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr><th>Date</th><th>Material</th><th class="num">Qty</th><th>Customer / job</th><th>Reference</th><th>By</th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var h in _history)
+                    {
+                        <tr>
+                            <td>@Fmt.Local(h.Date)</td>
+                            <td>@h.ItemName</td>
+                            <td class="num">@Fmt.Qty(h.Quantity) @h.Unit</td>
+                            <td>@h.JobReference</td>
+                            <td>@h.Reference</td>
+                            <td>@h.ReleasedBy</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private List<StockItemOption> _items = new();
+    private List<StockOutRow> _history = new();
+    private StockOutInput _form = new();
+    private StockItemOption? _selected;
+    private bool _loading = true;
+    private bool _busy;
+    private string? _message, _error;
+
+    // Rule: requested quantity must not exceed current stock. The service re-checks this before saving.
+    private List<SubstituteSuggestion> _subs = new();
+
+    private bool ShowSubstitutes => _subs.Count > 0 && _selected is not null
+        && (ExceedsStock || _selected.QuantityOnHand <= 0);
+
+    private bool ExceedsStock => _selected is not null && _form.Quantity > _selected.QuantityOnHand;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _items = await InventorySvc.GetItemOptionsAsync();
+            _history = await StockSvc.RecentStockOutsAsync();
+            _selected = _items.FirstOrDefault(i => i.ItemId == _form.ItemId);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading stock-out page failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    private async Task OnItemChanged(int itemId)
+    {
+        _form.ItemId = itemId;
+        _selected = _items.FirstOrDefault(i => i.ItemId == itemId);
+
+        try
+        {
+            _subs = itemId > 0 ? await SubstituteSvc.GetSuggestionsAsync(itemId) : new List<SubstituteSuggestion>();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading substitute suggestions failed.", ex);
+            _subs = new List<SubstituteSuggestion>();
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _busy = true;
+        _message = _error = null;
+        var result = await StockSvc.RecordStockOutAsync(_form, Auth.Current!.UserId);
+        _busy = false;
+
+        if (result.Success)
+        {
+            _message = result.Message;
+            _form = new StockOutInput();
+            _selected = null;
+            _subs = new List<SubstituteSuggestion>();
+        }
+        else
+        {
+            _error = result.Error;
+        }
+
+        await LoadAsync(); // refresh available quantities and history either way
+    }
+}

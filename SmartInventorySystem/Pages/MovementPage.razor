@@ -1,0 +1,219 @@
+@page "/analytics/movement"
+@attribute [Authorize(Policy = Permissions.AnalyticsView)]
+@inject IMovementService MovementSvc
+@inject IAuthService Auth
+
+<h1 class="page-title">Fast / Slow-Moving Analysis</h1>
+<p class="muted">Classifies each item by how quickly its stock is used up, using real consumption records.</p>
+
+@if (_message is not null)
+{
+    <div class="alert alert-success" role="status">@_message</div>
+}
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+<div class="card">
+    <h2>Run analysis</h2>
+    <div class="toolbar">
+        <label class="inline-label">From <input class="input" type="date" max="@TodayText" @bind="_from" /></label>
+        <label class="inline-label">To <input class="input" type="date" max="@TodayText" @bind="_to" /></label>
+        <button type="button" class="btn btn-primary" @onclick="RunAsync" disabled="@_busy">
+            @(_busy ? "Analyzing..." : "Run analysis")
+        </button>
+    </div>
+    @if (_snapshot?.CalculatedAt is DateTime ranAt)
+    {
+        <p class="hint">Showing the latest result: period @_snapshot.Period, calculated @Fmt.Local(ranAt).</p>
+    }
+</div>
+
+@if (_loading)
+{
+    <p class="muted">Loading...</p>
+}
+else if (_snapshot is null || _snapshot.Rows.Count == 0)
+{
+    <div class="card"><div class="empty-state">No analysis yet. Choose a date range and click <strong>Run analysis</strong>.</div></div>
+}
+else
+{
+    var rows = Visible().ToList();
+
+    <div class="grid">
+        <div class="card stat">
+            <div class="stat-label">Fast-moving</div>
+            <div class="stat-value">@Count(MovementClass.FastMoving)</div>
+        </div>
+        <div class="card stat">
+            <div class="stat-label">Moderate-moving</div>
+            <div class="stat-value">@Count(MovementClass.ModerateMoving)</div>
+        </div>
+        <div class="card stat">
+            <div class="stat-label">Slow-moving</div>
+            <div class="stat-value">@Count(MovementClass.SlowMoving)</div>
+        </div>
+        <div class="card stat @(HighRiskCount > 0 ? "stat-danger" : string.Empty)">
+            <div class="stat-label">High obsolescence risk</div>
+            <div class="stat-value">@HighRiskCount</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="toolbar">
+            <select class="input" @bind="_categoryFilter">
+                <option value="0">All categories</option>
+                @foreach (var c in Categories)
+                {
+                    <option value="@c.Id">@c.Name</option>
+                }
+            </select>
+            <select class="input" @bind="_itemFilter">
+                <option value="0">All items</option>
+                @foreach (var i in _snapshot.Rows.OrderBy(r => r.ItemName))
+                {
+                    <option value="@i.ItemId">@i.ItemName</option>
+                }
+            </select>
+            <select class="input" @bind="_classFilter">
+                <option value="All">All classifications</option>
+                <option value="FastMoving">Fast-Moving</option>
+                <option value="ModerateMoving">Moderate-Moving</option>
+                <option value="SlowMoving">Slow-Moving</option>
+            </select>
+        </div>
+
+        @if (rows.Count == 0)
+        {
+            <div class="empty-state">No items match the current filters.</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Item</th><th>Category</th><th class="num">Total consumption</th>
+                            <th class="num">Days used</th><th class="num">Avg daily usage</th>
+                            <th class="num">Turnover rate</th><th>Classification</th>
+                            <th>Obsolescence risk</th><th class="num">Days since last use</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var r in rows)
+                    {
+                        <tr>
+                            <td>@r.ItemName</td>
+                            <td>@r.CategoryName</td>
+                            <td class="num">@Fmt.Qty(r.TotalConsumption) @r.Unit</td>
+                            <td class="num">@r.Frequency</td>
+                            <td class="num">@Fmt.Qty(r.AverageDailyUsage) @r.Unit</td>
+                            <td class="num"><strong>@r.TurnoverRate.ToString("0.##")</strong></td>
+                            <td><Badge Kind="@AnalyticsUi.MovementKind(r.Classification)" Text="@AnalyticsUi.Movement(r.Classification)" /></td>
+                            <td><Badge Kind="@AnalyticsUi.RiskKind(r.Risk)" Text="@r.Risk.ToString()" /></td>
+                            <td class="num">@(r.DaysSinceLastUse?.ToString() ?? "never")</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+
+    <div class="grid-2">
+        <div class="card">
+            <h2>Turnover rate by item</h2>
+            <p class="muted small">Higher = stock is used up faster.</p>
+            <BarList Items="TurnoverBars(rows)" EmptyText="No items match the current filters." />
+        </div>
+        <div class="card">
+            <h2>How the classification works</h2>
+            <ul class="plain-list">
+                <li><strong>Total consumption</strong>: quantity used in the date range.</li>
+                <li><strong>Average daily usage</strong>: total consumption / days in the range.</li>
+                <li><strong>Turnover rate</strong>: total consumption / average stock level during the range.</li>
+                <li><strong>Fast-moving</strong>: turnover at or above @_settings.FastMinTurnover.ToString("0.##").</li>
+                <li><strong>Slow-moving</strong>: turnover at or below @_settings.SlowMaxTurnover.ToString("0.##").</li>
+                <li><strong>Moderate-moving</strong>: everything in between.</li>
+            </ul>
+            <p class="muted small">
+                These limits are for a @_settings.EvaluationDays-day range and are scaled automatically for shorter or longer ranges.
+                Obsolescence risk adds up warning signs: not used for @_settings.ObsolescenceNoUseDays+ days, too much stock for the
+                current demand, declining usage, and slow movement.
+            </p>
+        </div>
+    </div>
+}
+
+@code {
+    private MovementSnapshot? _snapshot;
+    private MovementSettingsInfo _settings = new(90, 2m, 0.5m, 60);
+    private DateTime _from = DateTime.Today.AddDays(-89);
+    private DateTime _to = DateTime.Today;
+    private bool _loading = true;
+    private bool _busy;
+    private string? _message, _error;
+
+    private int _categoryFilter;
+    private int _itemFilter;
+    private string _classFilter = "All";
+
+    private string TodayText => DateTime.Today.ToString("yyyy-MM-dd");
+
+    private IEnumerable<(int Id, string Name)> Categories => _snapshot is null
+        ? Enumerable.Empty<(int, string)>()
+        : _snapshot.Rows.Select(r => (r.CategoryId, r.CategoryName)).Distinct().OrderBy(c => c.CategoryName);
+
+    private int HighRiskCount => _snapshot?.Rows.Count(r => r.Risk == RiskLevel.High) ?? 0;
+
+    private int Count(MovementClass c) => _snapshot?.Rows.Count(r => r.Classification == c) ?? 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _settings = await MovementSvc.GetSettingsAsync();
+            _from = DateTime.Today.AddDays(-(_settings.EvaluationDays - 1));
+            _snapshot = await MovementSvc.GetLatestAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading movement analysis failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    private IEnumerable<MovementRow> Visible()
+    {
+        IEnumerable<MovementRow> q = _snapshot?.Rows ?? new List<MovementRow>();
+        if (_categoryFilter != 0) q = q.Where(r => r.CategoryId == _categoryFilter);
+        if (_itemFilter != 0) q = q.Where(r => r.ItemId == _itemFilter);
+        if (_classFilter != "All") q = q.Where(r => r.Classification.ToString() == _classFilter);
+        return q;
+    }
+
+    private static List<BarItem> TurnoverBars(List<MovementRow> rows) => rows
+        .OrderByDescending(r => r.TurnoverRate)
+        .Select(r => new BarItem(r.ItemName, (double)r.TurnoverRate, r.TurnoverRate.ToString("0.##"), AnalyticsUi.MovementKind(r.Classification)))
+        .ToList();
+
+    private async Task RunAsync()
+    {
+        _busy = true;
+        _message = _error = null;
+        var result = await MovementSvc.RunAsync(_from, _to, Auth.Current!.UserId);
+        if (result.Success)
+        {
+            _message = result.Message;
+            _snapshot = await MovementSvc.GetLatestAsync();
+        }
+        else
+        {
+            _error = result.Error;
+        }
+        _busy = false;
+    }
+}

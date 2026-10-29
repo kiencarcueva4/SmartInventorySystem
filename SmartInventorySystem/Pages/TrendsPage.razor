@@ -1,0 +1,235 @@
+@page "/analytics/trends"
+@attribute [Authorize(Policy = Permissions.AnalyticsView)]
+@inject ITrendService TrendSvc
+@inject IAuthService Auth
+
+<h1 class="page-title">Inventory Trend Analysis</h1>
+<p class="muted">Shows how stock levels, consumption, stock-in and stock-out changed week by week.</p>
+
+@if (_message is not null)
+{
+    <div class="alert alert-success" role="status">@_message</div>
+}
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+<div class="card">
+    <h2>Generate trends</h2>
+    <div class="toolbar">
+        <label class="inline-label">From <input class="input" type="date" max="@TodayText" @bind="_from" /></label>
+        <label class="inline-label">To <input class="input" type="date" max="@TodayText" @bind="_to" /></label>
+        <button type="button" class="btn btn-primary" @onclick="GenerateAsync" disabled="@_busy">
+            @(_busy ? "Analyzing..." : "Generate trends")
+        </button>
+    </div>
+    <p class="hint">The range is split into whole 7-day periods counted back from the end date.</p>
+</div>
+
+@if (_loading)
+{
+    <p class="muted">Loading...</p>
+}
+else if (_rows.Count == 0)
+{
+    <div class="card"><div class="empty-state">No trend data yet. Choose a date range and click <strong>Generate trends</strong>.</div></div>
+}
+else
+{
+    var rows = Visible().ToList();
+    var summary = Summary(rows);
+
+    <div class="card">
+        <div class="toolbar">
+            <select class="input" @bind="_categoryFilter">
+                <option value="0">All categories</option>
+                @foreach (var c in Categories)
+                {
+                    <option value="@c.Id">@c.Name</option>
+                }
+            </select>
+            <select class="input" @bind="_itemFilter">
+                <option value="0">All items (summary)</option>
+                @foreach (var i in Items)
+                {
+                    <option value="@i.Id">@i.Name</option>
+                }
+            </select>
+            <label class="inline-label">From <input class="input" type="date" @bind="_filterFrom" /></label>
+            <label class="inline-label">To <input class="input" type="date" @bind="_filterTo" /></label>
+        </div>
+
+        @if (rows.Count == 0)
+        {
+            <div class="empty-state">No trend periods match the current filters.</div>
+        }
+        else
+        {
+            <h2>Trend summary per item</h2>
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Item</th><th>Category</th><th>Trend</th><th class="num">Total consumption</th>
+                            <th class="num">Days out of stock</th><th class="num">Overstock periods</th><th class="num">Latest stock</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var s in summary)
+                    {
+                        <tr>
+                            <td>@s.ItemName</td>
+                            <td>@s.CategoryName</td>
+                            <td><Badge Kind="@AnalyticsUi.TrendKind(s.Direction)" Text="@s.Direction.ToString()" /></td>
+                            <td class="num">@Fmt.Qty(s.Consumption) @s.Unit</td>
+                            <td class="num">@s.StockoutDays</td>
+                            <td class="num">@s.OverstockPeriods</td>
+                            <td class="num">@Fmt.Qty(s.LatestStock) @s.Unit</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+
+    @if (_itemFilter != 0 && rows.Count > 0)
+    {
+        var ordered = rows.OrderBy(r => r.PeriodStart).ToList();
+        var unit = ordered[0].Unit;
+
+        <div class="grid-2">
+            <div class="card">
+                <h2>Ending stock per week</h2>
+                <ColumnChart Points="@ordered.Select(r => new ChartPoint(r.PeriodStart.ToString("MM-dd"), (double)r.EndingStock)).ToList()"
+                             Title="Ending stock per week" PeakLabel="@unit" />
+            </div>
+            <div class="card">
+                <h2>Consumption per week</h2>
+                <ColumnChart Points="@ordered.Select(r => new ChartPoint(r.PeriodStart.ToString("MM-dd"), (double)r.Consumption)).ToList()"
+                             Title="Consumption per week" PeakLabel="@unit" />
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Weekly detail - @ordered[0].ItemName</h2>
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Period</th><th class="num">Beginning</th><th class="num">Stock-in</th><th class="num">Stock-out</th>
+                            <th class="num">Ending</th><th class="num">Consumption</th><th class="num">Days out of stock</th><th>Overstock</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var r in ordered)
+                    {
+                        <tr>
+                            <td>@r.Period</td>
+                            <td class="num">@Fmt.Qty(r.BeginningStock)</td>
+                            <td class="num">@Fmt.Qty(r.StockIn)</td>
+                            <td class="num">@Fmt.Qty(r.StockOut)</td>
+                            <td class="num"><strong>@Fmt.Qty(r.EndingStock)</strong></td>
+                            <td class="num">@Fmt.Qty(r.Consumption)</td>
+                            <td class="num">@r.StockoutOccurrences</td>
+                            <td>@(r.Overstock ? "Yes" : "No")</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+
+    <div class="card">
+        <h2>How trends are decided</h2>
+        <p class="muted small">
+            Consumption across the weekly periods is fitted with a straight line. If the line rises by 20% of the average or more the trend is
+            <strong>Increasing</strong>; if it falls by 20% or more it is <strong>Decreasing</strong>. Otherwise it is <strong>Stable</strong>,
+            unless weekly consumption jumps around a lot (variation above 75% of the average), which is <strong>Irregular</strong>.
+            A day counts as "out of stock" when the end-of-day quantity is zero.
+        </p>
+    </div>
+}
+
+@code {
+    private sealed record ItemSummary(string ItemName, string CategoryName, string Unit, TrendDirection Direction,
+        decimal Consumption, int StockoutDays, int OverstockPeriods, decimal LatestStock);
+
+    private List<TrendRow> _rows = new();
+    private DateTime _from = DateTime.Today.AddDays(-89);
+    private DateTime _to = DateTime.Today;
+    private DateTime _filterFrom = DateTime.Today.AddDays(-365);
+    private DateTime _filterTo = DateTime.Today;
+    private bool _loading = true;
+    private bool _busy;
+    private string? _message, _error;
+
+    private int _categoryFilter;
+    private int _itemFilter;
+
+    private string TodayText => DateTime.Today.ToString("yyyy-MM-dd");
+
+    private IEnumerable<(int Id, string Name)> Categories =>
+        _rows.Select(r => (r.CategoryId, r.CategoryName)).Distinct().OrderBy(c => c.CategoryName);
+
+    private IEnumerable<(int Id, string Name)> Items =>
+        _rows.Select(r => (r.ItemId, r.ItemName)).Distinct().OrderBy(i => i.ItemName);
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _rows = await TrendSvc.GetAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading trends failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    private IEnumerable<TrendRow> Visible()
+    {
+        IEnumerable<TrendRow> q = _rows;
+        if (_categoryFilter != 0) q = q.Where(r => r.CategoryId == _categoryFilter);
+        if (_itemFilter != 0) q = q.Where(r => r.ItemId == _itemFilter);
+        q = q.Where(r => r.PeriodStart.Date >= _filterFrom.Date && r.PeriodEnd.Date <= _filterTo.Date);
+        return q;
+    }
+
+    private static List<ItemSummary> Summary(List<TrendRow> rows) => rows
+        .GroupBy(r => new { r.ItemId, r.ItemName, r.CategoryName, r.Unit })
+        .Select(g =>
+        {
+            var last = g.OrderByDescending(r => r.PeriodStart).First();
+            return new ItemSummary(g.Key.ItemName, g.Key.CategoryName, g.Key.Unit, last.Direction,
+                g.Sum(r => r.Consumption), g.Sum(r => r.StockoutOccurrences), g.Count(r => r.Overstock), last.EndingStock);
+        })
+        .OrderBy(s => s.ItemName)
+        .ToList();
+
+    private async Task GenerateAsync()
+    {
+        _busy = true;
+        _message = _error = null;
+        var result = await TrendSvc.GenerateAsync(_from, _to, Auth.Current!.UserId);
+        if (result.Success)
+        {
+            _message = result.Message;
+            _rows = await TrendSvc.GetAsync();
+            _filterFrom = _from;
+            _filterTo = _to;
+        }
+        else
+        {
+            _error = result.Error;
+        }
+        _busy = false;
+    }
+}

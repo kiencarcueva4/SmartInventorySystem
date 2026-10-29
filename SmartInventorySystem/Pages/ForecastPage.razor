@@ -1,0 +1,287 @@
+@page "/analytics/forecasting"
+@attribute [Authorize(Policy = Permissions.AnalyticsView)]
+@inject IForecastService ForecastSvc
+@inject IAuthService Auth
+
+<h1 class="page-title">Demand Forecasting</h1>
+<p class="muted">
+    Estimates how much of each material will be used in the next period from its past usage.
+    Forecasts are estimates, not guaranteed values.
+</p>
+
+@if (_message is not null)
+{
+    <div class="alert alert-success" role="status">@_message</div>
+}
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+<div class="grid-2">
+    <div class="card">
+        <h2>Forecast settings</h2>
+        <p class="muted small">
+            Weighted Moving Average: forecast = (most recent period x weight 1) + (previous period x weight 2) + (older period x weight 3).
+        </p>
+        <div class="form-grid">
+            <div>
+                <label for="w1">Weight - most recent</label>
+                <input id="w1" class="input" type="number" step="0.05" min="0" max="1" disabled="@(!CanEditSettings)" @bind="_settings.WeightRecent" />
+            </div>
+            <div>
+                <label for="w2">Weight - previous</label>
+                <input id="w2" class="input" type="number" step="0.05" min="0" max="1" disabled="@(!CanEditSettings)" @bind="_settings.WeightPrevious" />
+            </div>
+            <div>
+                <label for="w3">Weight - older</label>
+                <input id="w3" class="input" type="number" step="0.05" min="0" max="1" disabled="@(!CanEditSettings)" @bind="_settings.WeightOlder" />
+            </div>
+            <div>
+                <label for="pd">Period length (days)</label>
+                <input id="pd" class="input" type="number" step="1" min="1" max="60" disabled="@(!CanEditSettings)" @bind="_settings.PeriodDays" />
+            </div>
+            <div>
+                <label for="alpha">Smoothing factor (exponential)</label>
+                <input id="alpha" class="input" type="number" step="0.05" min="0.05" max="1" disabled="@(!CanEditSettings)" @bind="_settings.Alpha" />
+            </div>
+        </div>
+        <p class="hint">
+            Weights total: <strong class="@(WeightsOk ? "text-ok" : "text-danger")">@_settings.WeightTotal.ToString("0.00")</strong>
+            @(WeightsOk ? "(OK)" : "(must equal 1.00)")
+        </p>
+        @if (CanEditSettings)
+        {
+            <button type="button" class="btn btn-primary" @onclick="SaveSettingsAsync" disabled="@_busy">Save settings</button>
+        }
+        else
+        {
+            <p class="muted small">Only the administrator can change these settings.</p>
+        }
+    </div>
+
+    <div class="card">
+        <h2>Generate forecast</h2>
+        <label for="method">Forecast method</label>
+        <select id="method" class="input" @bind="_method">
+            <option value="@ForecastMethod.WeightedMovingAverage">Weighted Moving Average (recommended)</option>
+            <option value="@ForecastMethod.SimpleExponentialSmoothing">Simple Exponential Smoothing</option>
+        </select>
+
+        <div class="actions-row">
+            <button type="button" class="btn btn-primary" @onclick="GenerateAsync" disabled="@_busy">
+                @(_busy ? "Working..." : "Forecast next period")
+            </button>
+            <button type="button" class="btn btn-secondary" @onclick="BacktestAsync" disabled="@_busy">
+                Back-test last 6 periods
+            </button>
+        </div>
+        <p class="muted small">
+            <strong>Forecast next period</strong> predicts the next @_settings.PeriodDays days for every active item.
+            <strong>Back-test</strong> re-forecasts past periods using only the data that existed back then and
+            compares each with what was actually used, so you can see how accurate the method is.
+        </p>
+    </div>
+</div>
+
+@if (_loading)
+{
+    <p class="muted">Loading...</p>
+}
+else
+{
+    var rows = Visible().ToList();
+    var accuracy = ForecastCalculator.Summarize(rows);
+
+    <div class="grid">
+        <div class="card stat">
+            <div class="stat-label">Forecasts shown</div>
+            <div class="stat-value">@rows.Count</div>
+        </div>
+        <div class="card stat">
+            <div class="stat-label">Compared with actual</div>
+            <div class="stat-value">@accuracy.Evaluated</div>
+        </div>
+        <div class="card stat">
+            <div class="stat-label">MAPE (average % error)</div>
+            <div class="stat-value">@(accuracy.Mape is decimal mape ? mape.ToString("0.#") + "%" : "-")</div>
+            <div class="stat-sub">Lower is better</div>
+        </div>
+        <div class="card stat">
+            <div class="stat-label">Approx. accuracy</div>
+            <div class="stat-value">@(accuracy.Mape is decimal m2 ? Math.Max(0m, 100m - m2).ToString("0.#") + "%" : "-")</div>
+            <div class="stat-sub">100% minus MAPE</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="toolbar">
+            <select class="input" @bind="_categoryFilter">
+                <option value="0">All categories</option>
+                @foreach (var c in Categories)
+                {
+                    <option value="@c.Id">@c.Name</option>
+                }
+            </select>
+            <select class="input" @bind="_itemFilter">
+                <option value="0">All items</option>
+                @foreach (var i in Items)
+                {
+                    <option value="@i.Id">@i.Name</option>
+                }
+            </select>
+            <select class="input" @bind="_methodFilter">
+                <option value="All">All methods</option>
+                <option value="WeightedMovingAverage">Weighted Moving Average</option>
+                <option value="SimpleExponentialSmoothing">Simple Exponential Smoothing</option>
+            </select>
+            <select class="input" @bind="_periodFilter">
+                <option value="All">All periods</option>
+                <option value="Upcoming">Current / upcoming</option>
+                <option value="Finished">Finished (with actuals)</option>
+            </select>
+        </div>
+
+        @if (rows.Count == 0)
+        {
+            <div class="empty-state">No forecasts yet. Click <strong>Forecast next period</strong> or <strong>Back-test</strong>.</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Item</th><th>Historical consumption<br /><span class="muted small">recent to older</span></th>
+                            <th>Method</th><th>Forecast period</th><th class="num">Forecast</th>
+                            <th class="num">Actual</th><th class="num">Error</th><th class="num">% error</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var r in rows)
+                    {
+                        <tr>
+                            <td>@r.ItemName</td>
+                            <td class="muted">@string.Join(" / ", r.History.Select(h => Fmt.Qty(h))) @r.Unit</td>
+                            <td>@(r.Method == ForecastMethod.WeightedMovingAverage ? "WMA" : "Exp. smoothing")@(r.IsBacktest ? " (back-test)" : string.Empty)</td>
+                            <td>@r.Period</td>
+                            <td class="num"><strong>@Fmt.Qty(r.ForecastValue)</strong> @r.Unit</td>
+                            <td class="num">@(r.Actual is decimal a ? Fmt.Qty(a) + " " + r.Unit : "-")</td>
+                            <td class="num">@(r.AbsoluteError is decimal e ? Fmt.Qty(e) : "-")</td>
+                            <td class="num">@(r.PercentageError is decimal p ? p.ToString("0.#") + "%" : "-")</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+
+    @if (accuracy.PerItem.Count > 0)
+    {
+        <div class="card">
+            <h2>Forecast vs actual - accuracy per item</h2>
+            <p class="muted small">
+                MAE = average absolute error in the item's own unit. MAPE = average percentage error.
+                Based on the forecasts currently shown above.
+            </p>
+            <div class="table-wrap">
+                <table class="table">
+                    <thead><tr><th>Item</th><th class="num">Periods compared</th><th class="num">MAE</th><th class="num">MAPE</th></tr></thead>
+                    <tbody>
+                    @foreach (var a in accuracy.PerItem)
+                    {
+                        <tr>
+                            <td>@a.ItemName</td>
+                            <td class="num">@a.Periods</td>
+                            <td class="num">@Fmt.Qty(a.Mae) @a.Unit</td>
+                            <td class="num">@(a.Mape is decimal mp ? mp.ToString("0.#") + "%" : "-")</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    private ForecastSettingsInput _settings = new();
+    private List<ForecastRow> _rows = new();
+    private ForecastMethod _method = ForecastMethod.WeightedMovingAverage;
+    private bool _loading = true;
+    private bool _busy;
+    private string? _message, _error;
+
+    private int _categoryFilter;
+    private int _itemFilter;
+    private string _methodFilter = "All";
+    private string _periodFilter = "All";
+
+    private bool CanEditSettings => Auth.Can(Permissions.SettingsManage);
+    private bool WeightsOk => ForecastCalculator.WeightsAreValid(_settings.WeightRecent, _settings.WeightPrevious, _settings.WeightOlder);
+
+    private IEnumerable<(int Id, string Name)> Categories =>
+        _rows.Select(r => (r.CategoryId, r.CategoryName)).Distinct().OrderBy(c => c.CategoryName);
+
+    private IEnumerable<(int Id, string Name)> Items =>
+        _rows.Select(r => (r.ItemId, r.ItemName)).Distinct().OrderBy(i => i.ItemName);
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _settings = await ForecastSvc.GetSettingsAsync();
+            _rows = await ForecastSvc.GetAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading forecasts failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    private IEnumerable<ForecastRow> Visible()
+    {
+        IEnumerable<ForecastRow> q = _rows;
+        if (_categoryFilter != 0) q = q.Where(r => r.CategoryId == _categoryFilter);
+        if (_itemFilter != 0) q = q.Where(r => r.ItemId == _itemFilter);
+        if (_methodFilter != "All") q = q.Where(r => r.Method.ToString() == _methodFilter);
+        if (_periodFilter == "Upcoming") q = q.Where(r => r.Actual is null);
+        else if (_periodFilter == "Finished") q = q.Where(r => r.Actual is not null);
+        return q;
+    }
+
+    private async Task SaveSettingsAsync()
+    {
+        _busy = true;
+        _message = _error = null;
+        var result = await ForecastSvc.SaveSettingsAsync(_settings, Auth.Current!.UserId);
+        if (result.Success) _message = result.Message; else _error = result.Error;
+        _busy = false;
+    }
+
+    private async Task GenerateAsync()
+    {
+        _busy = true;
+        _message = _error = null;
+        var result = await ForecastSvc.GenerateAsync(_method, Auth.Current!.UserId);
+        if (result.Success) _message = result.Message; else _error = result.Error;
+        _rows = await ForecastSvc.GetAsync();
+        _busy = false;
+    }
+
+    private async Task BacktestAsync()
+    {
+        _busy = true;
+        _message = _error = null;
+        var result = await ForecastSvc.BacktestAsync(_method, 6, Auth.Current!.UserId);
+        if (result.Success) _message = result.Message; else _error = result.Error;
+        _rows = await ForecastSvc.GetAsync();
+        _busy = false;
+    }
+}

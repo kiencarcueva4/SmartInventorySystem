@@ -1,0 +1,7 @@
+<span class="badge badge-@Kind">@Text</span>
+
+@code {
+    /// <summary>ok, warn, danger, info or muted.</summary>
+    [Parameter] public string Kind { get; set; } = "info";
+    [Parameter] public string Text { get; set; } = string.Empty;
+}

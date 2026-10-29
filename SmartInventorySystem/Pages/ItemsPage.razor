@@ -1,0 +1,431 @@
+@page "/items"
+@attribute [Authorize(Policy = Permissions.ItemsManage)]
+@inject IItemService ItemSvc
+@inject ICategoryService CategorySvc
+@inject ISupplierService SupplierSvc
+@inject IAuthService Auth
+@inject ISubstituteService SubstituteSvc
+
+<div class="page-header">
+    <h1 class="page-title">Items</h1>
+    <button type="button" class="btn btn-primary" @onclick="OpenAdd">+ Add item</button>
+</div>
+
+@if (_message is not null)
+{
+    <div class="alert alert-success" role="status">@_message</div>
+}
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">@_error</div>
+}
+
+<div class="card">
+    <div class="toolbar">
+        <input class="input" placeholder="Search name or SKU..." @bind="_search" @bind:event="oninput" />
+        <select class="input" @bind="_categoryFilter">
+            <option value="0">All categories</option>
+            @foreach (var c in _categories)
+            {
+                <option value="@c.CategoryId">@c.Name</option>
+            }
+        </select>
+        <select class="input" @bind="_statusFilter">
+            <option value="Active">Active</option>
+            <option value="Inactive">Inactive</option>
+            <option value="All">All</option>
+        </select>
+    </div>
+
+    @if (_loading)
+    {
+        <p class="muted">Loading...</p>
+    }
+    else
+    {
+        var rows = Filtered.ToList();
+        if (rows.Count == 0)
+        {
+            <div class="empty-state">No items found.</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>SKU</th><th>Item</th><th>Category</th><th>Supplier</th><th>Unit</th>
+                            <th class="num">Unit cost</th><th class="num">Safety</th><th class="num">Reorder pt</th>
+                            <th class="num">Reorder qty</th><th class="num">On hand</th><th>Status</th><th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var r in rows)
+                    {
+                        <tr>
+                            <td>@r.Sku</td>
+                            <td>@r.Name</td>
+                            <td>@r.CategoryName</td>
+                            <td>@(r.SupplierName ?? "-")</td>
+                            <td>@r.Unit</td>
+                            <td class="num">@Fmt.Money(r.UnitCost)</td>
+                            <td class="num">@Fmt.Qty(r.SafetyStock)</td>
+                            <td class="num">@Fmt.Qty(r.ReorderPoint)</td>
+                            <td class="num">@Fmt.Qty(r.ReorderQuantity)</td>
+                            <td class="num">@Fmt.Qty(r.QuantityOnHand)</td>
+                            <td><Badge Kind="@(r.Status == RecordStatus.Active ? "ok" : "muted")" Text="@r.Status.ToString()" /></td>
+                            <td class="actions">
+                                <button type="button" class="btn btn-sm btn-secondary" @onclick="() => OpenEdit(r)">Edit</button>
+                                <button type="button" class="btn btn-sm btn-secondary" @onclick="() => OpenSubs(r)">Substitutes</button>
+                                <button type="button" class="btn btn-sm btn-secondary" @onclick="() => _toggle = r">
+                                    @(r.Status == RecordStatus.Active ? "Deactivate" : "Activate")
+                                </button>
+                                <button type="button" class="btn btn-sm btn-danger" @onclick="() => _delete = r">Delete</button>
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    }
+</div>
+
+@if (_form is not null)
+{
+    <Modal Title="@(_form.ItemId == 0 ? "Add item" : "Edit item")" OnClose="CloseForm">
+        <EditForm Model="_form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+            @if (_formError is not null)
+            {
+                <div class="alert alert-error" role="alert">@_formError</div>
+            }
+
+            <div class="form-grid">
+                <div class="span-2">
+                    <label for="item-name">Item name</label>
+                    <InputText id="item-name" class="input" @bind-Value="_form.ItemName" />
+                    <ValidationMessage For="() => _form.ItemName" />
+                </div>
+                <div>
+                    <label for="item-sku">SKU / item code</label>
+                    <InputText id="item-sku" class="input" @bind-Value="_form.SKU" />
+                    <ValidationMessage For="() => _form.SKU" />
+                </div>
+                <div>
+                    <label for="item-unit">Unit of measure</label>
+                    <InputText id="item-unit" class="input" list="unit-list" @bind-Value="_form.UnitOfMeasure" />
+                    <datalist id="unit-list">
+                        <option value="sheet"></option>
+                        <option value="ream"></option>
+                        <option value="piece"></option>
+                        <option value="roll"></option>
+                        <option value="meter"></option>
+                        <option value="sq ft"></option>
+                        <option value="bottle"></option>
+                        <option value="cartridge"></option>
+                        <option value="box"></option>
+                    </datalist>
+                    <ValidationMessage For="() => _form.UnitOfMeasure" />
+                </div>
+                <div>
+                    <label for="item-cat">Category</label>
+                    <InputSelect id="item-cat" class="input" @bind-Value="_form.CategoryId">
+                        <option value="0">Select category...</option>
+                        @foreach (var c in CategoryOptions)
+                        {
+                            <option value="@c.CategoryId">@c.Name</option>
+                        }
+                    </InputSelect>
+                    <ValidationMessage For="() => _form.CategoryId" />
+                </div>
+                <div>
+                    <label for="item-sup">Supplier (optional)</label>
+                    <InputSelect id="item-sup" class="input" @bind-Value="_form.SupplierId">
+                        <option value="">None</option>
+                        @foreach (var s in SupplierOptions)
+                        {
+                            <option value="@s.SupplierId">@s.Name (lead time @s.LeadTimeDays d)</option>
+                        }
+                    </InputSelect>
+                </div>
+                <div>
+                    <label for="item-cost">Unit cost</label>
+                    <InputNumber id="item-cost" class="input" @bind-Value="_form.UnitCost" />
+                    <ValidationMessage For="() => _form.UnitCost" />
+                </div>
+                <div>
+                    <label for="item-safety">Safety stock</label>
+                    <InputNumber id="item-safety" class="input" @bind-Value="_form.SafetyStock" />
+                    <ValidationMessage For="() => _form.SafetyStock" />
+                </div>
+                <div>
+                    <label for="item-rp">Reorder point</label>
+                    <InputNumber id="item-rp" class="input" @bind-Value="_form.ReorderPoint" />
+                    <ValidationMessage For="() => _form.ReorderPoint" />
+                </div>
+                <div>
+                    <label for="item-rq">Reorder quantity</label>
+                    <InputNumber id="item-rq" class="input" @bind-Value="_form.ReorderQuantity" />
+                    <ValidationMessage For="() => _form.ReorderQuantity" />
+                </div>
+                <div class="span-2">
+                    <label for="item-desc">Description (optional)</label>
+                    <InputTextArea id="item-desc" class="input" rows="2" @bind-Value="_form.Description" />
+                    <ValidationMessage For="() => _form.Description" />
+                </div>
+            </div>
+            @if (_form.ItemId == 0)
+            {
+                <p class="hint">New items start with 0 stock. Use Stock-In to add stock.</p>
+            }
+
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" @onclick="CloseForm">Cancel</button>
+                <button type="submit" class="btn btn-primary" disabled="@_busy">@(_busy ? "Saving..." : "Save")</button>
+            </div>
+        </EditForm>
+    </Modal>
+}
+
+@if (_subItem is not null)
+{
+    <Modal Title="@($"Substitutes for {_subItem.Name}")" OnClose="CloseSubs">
+        <p class="muted small">
+            Materials that can be used instead when this item runs short. The system only suggests them - you always choose.
+            Other items in the same category are suggested automatically as well.
+        </p>
+
+        @if (_subError is not null)
+        {
+            <div class="alert alert-error" role="alert">@_subError</div>
+        }
+
+        @if (_links.Count == 0)
+        {
+            <div class="empty-state">No substitutes configured yet.</div>
+        }
+        else
+        {
+            <table class="table">
+                <thead><tr><th>Substitute</th><th class="num">Available</th><th>Note</th><th></th></tr></thead>
+                <tbody>
+                @foreach (var l in _links)
+                {
+                    <tr>
+                        <td>@l.Name <span class="muted small">@l.Sku</span></td>
+                        <td class="num">@Fmt.Qty(l.Available) @l.Unit</td>
+                        <td class="muted">@l.Notes</td>
+                        <td class="actions"><button type="button" class="btn btn-sm btn-secondary" @onclick="() => RemoveSubAsync(l.LinkId)">Remove</button></td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        }
+
+        <h3>Add a substitute</h3>
+        <select class="input" @bind="_newSubId">
+            <option value="0">Select item...</option>
+            @foreach (var o in SubstituteOptions)
+            {
+                <option value="@o.ItemId">@o.Name (@o.Sku)</option>
+            }
+        </select>
+        <input class="input spaced" placeholder="Note (optional)" @bind="_subNote" />
+
+        <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" @onclick="CloseSubs">Close</button>
+            <button type="button" class="btn btn-primary" @onclick="AddSubAsync" disabled="@(_busy || _newSubId == 0)">Add substitute</button>
+        </div>
+    </Modal>
+}
+
+@if (_delete is not null)
+{
+    <ConfirmDialog Title="Delete item?"
+                   Message="@($"Permanently delete the item '{_delete.Name}'? This cannot be undone. Items with stock history cannot be deleted - deactivate them instead.")"
+                   ConfirmText="Delete"
+                   Danger="true"
+                   Busy="_busy"
+                   OnConfirm="ConfirmDeleteAsync"
+                   OnCancel="() => _delete = null" />
+}
+
+@if (_toggle is not null)
+{
+    <ConfirmDialog Title="@(_toggle.Status == RecordStatus.Active ? "Deactivate item?" : "Activate item?")"
+                   Message="@($"{(_toggle.Status == RecordStatus.Active ? "Deactivate" : "Activate")} the item '{_toggle.Name}'? Inactive items cannot be used in stock transactions.")"
+                   ConfirmText="@(_toggle.Status == RecordStatus.Active ? "Deactivate" : "Activate")"
+                   Danger="@(_toggle.Status == RecordStatus.Active)"
+                   Busy="_busy"
+                   OnConfirm="ConfirmToggleAsync"
+                   OnCancel="() => _toggle = null" />
+}
+
+@code {
+    private List<ItemRow> _all = new();
+    private List<CategoryRow> _categories = new();
+    private List<SupplierRow> _suppliers = new();
+    private bool _loading = true;
+    private bool _busy;
+    private string _search = string.Empty;
+    private int _categoryFilter;
+    private string _statusFilter = "Active";
+    private string? _message, _error, _formError;
+    private ItemInput? _form;
+    private ItemRow? _toggle;
+
+    private IEnumerable<ItemRow> Filtered => _all
+        .Where(i => string.IsNullOrWhiteSpace(_search)
+                    || i.Name.Contains(_search, StringComparison.OrdinalIgnoreCase)
+                    || i.Sku.Contains(_search, StringComparison.OrdinalIgnoreCase))
+        .Where(i => _categoryFilter == 0 || i.CategoryId == _categoryFilter)
+        .Where(i => _statusFilter == "All" || i.Status.ToString() == _statusFilter);
+
+    // Only active categories / suppliers can be chosen, plus the one the item already has.
+    private IEnumerable<CategoryRow> CategoryOptions =>
+        _categories.Where(c => c.Status == RecordStatus.Active || c.CategoryId == _form?.CategoryId);
+
+    private IEnumerable<SupplierRow> SupplierOptions =>
+        _suppliers.Where(s => s.Status == RecordStatus.Active || s.SupplierId == _form?.SupplierId);
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _all = await ItemSvc.ListAsync();
+            _categories = await CategorySvc.ListAsync();
+            _suppliers = await SupplierSvc.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Loading items failed.", ex);
+            _error = ServiceMessages.LoadFailed;
+        }
+        _loading = false;
+    }
+
+    private void OpenAdd()
+    {
+        _message = _error = _formError = null;
+        _form = new ItemInput();
+    }
+
+    private void OpenEdit(ItemRow r)
+    {
+        _message = _error = _formError = null;
+        _form = new ItemInput
+        {
+            ItemId = r.ItemId, ItemName = r.Name, SKU = r.Sku, Description = r.Description,
+            CategoryId = r.CategoryId, SupplierId = r.SupplierId, UnitOfMeasure = r.Unit,
+            UnitCost = r.UnitCost, SafetyStock = r.SafetyStock, ReorderPoint = r.ReorderPoint,
+            ReorderQuantity = r.ReorderQuantity
+        };
+    }
+
+    private ItemRow? _delete;
+
+    private async Task ConfirmDeleteAsync()
+    {
+        if (_delete is null) return;
+        _busy = true;
+        var result = await ItemSvc.DeleteAsync(_delete.ItemId, Auth.Current!.UserId);
+        _busy = false;
+        _delete = null;
+
+        _message = result.Success ? result.Message : null;
+        _error = result.Success ? null : result.Error;
+        await LoadAsync();
+    }
+
+    // ---------------- substitutes ----------------
+    private ItemRow? _subItem;
+    private List<SubstituteLink> _links = new();
+    private int _newSubId;
+    private string? _subNote, _subError;
+
+    private IEnumerable<ItemRow> SubstituteOptions => _subItem is null
+        ? Enumerable.Empty<ItemRow>()
+        : _all.Where(i => i.Status == RecordStatus.Active
+                          && i.ItemId != _subItem.ItemId
+                          && !_links.Any(l => l.SubstituteItemId == i.ItemId));
+
+    private async Task OpenSubs(ItemRow row)
+    {
+        _message = _error = null;
+        _subError = null;
+        _newSubId = 0;
+        _subNote = null;
+        _subItem = row;
+        _links = await SubstituteSvc.GetLinksAsync(row.ItemId);
+    }
+
+    private void CloseSubs() => _subItem = null;
+
+    private async Task AddSubAsync()
+    {
+        if (_subItem is null) return;
+        _busy = true;
+        var result = await SubstituteSvc.AddAsync(_subItem.ItemId, _newSubId, _subNote, Auth.Current!.UserId);
+        _busy = false;
+
+        if (result.Success)
+        {
+            _subError = null;
+            _newSubId = 0;
+            _subNote = null;
+            _links = await SubstituteSvc.GetLinksAsync(_subItem.ItemId);
+        }
+        else
+        {
+            _subError = result.Error;
+        }
+    }
+
+    private async Task RemoveSubAsync(int linkId)
+    {
+        if (_subItem is null) return;
+        var result = await SubstituteSvc.RemoveAsync(linkId, Auth.Current!.UserId);
+        _subError = result.Success ? null : result.Error;
+        _links = await SubstituteSvc.GetLinksAsync(_subItem.ItemId);
+    }
+
+    private void CloseForm() => _form = null;
+
+    private async Task SaveAsync()
+    {
+        if (_form is null) return;
+        _busy = true;
+        _formError = null;
+        var result = await ItemSvc.SaveAsync(_form, Auth.Current!.UserId);
+        _busy = false;
+
+        if (result.Success)
+        {
+            _form = null;
+            _message = result.Message;
+            await LoadAsync();
+        }
+        else
+        {
+            _formError = result.Error;
+        }
+    }
+
+    private async Task ConfirmToggleAsync()
+    {
+        if (_toggle is null) return;
+        _busy = true;
+        var makeActive = _toggle.Status != RecordStatus.Active;
+        var result = await ItemSvc.SetActiveAsync(_toggle.ItemId, makeActive, Auth.Current!.UserId);
+        _busy = false;
+        _toggle = null;
+
+        _message = result.Success ? result.Message : null;
+        _error = result.Success ? null : result.Error;
+        await LoadAsync();
+    }
+}
